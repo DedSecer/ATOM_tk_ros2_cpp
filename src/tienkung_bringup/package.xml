@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>tienkung_bringup</name>
+  <version>0.1.0</version>
+  <description>Configuration and launch files for Tienkung policy deployment.</description>
+  <maintainer email="dedsecer@example.com">DedSecer</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>tienkung_motion_source</exec_depend>
+  <exec_depend>tienkung_policy_runner</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
