@@ -85,21 +85,22 @@ target_include_directories(${PROJECT_NAME}_ros
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(${PROJECT_NAME}_ros PUBLIC ${PROJECT_NAME}_core)
+# ament_target_dependencies() uses CMake's plain target_link_libraries form.
+target_link_libraries(${PROJECT_NAME}_ros ${PROJECT_NAME}_core)
 ament_target_dependencies(${PROJECT_NAME}_ros
   rclcpp sensor_msgs bodyctrl_msgs tienkung_interfaces)
 target_compile_options(${PROJECT_NAME}_ros PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(policy_runner_node src/policy_runner_main.cpp)
-target_link_libraries(policy_runner_node PRIVATE ${PROJECT_NAME}_ros)
+target_link_libraries(policy_runner_node ${PROJECT_NAME}_ros)
 ament_target_dependencies(policy_runner_node rclcpp)
 
 add_executable(dry_run_node src/dry_run_main.cpp)
-target_link_libraries(dry_run_node PRIVATE ${PROJECT_NAME}_ros)
+target_link_libraries(dry_run_node ${PROJECT_NAME}_ros)
 ament_target_dependencies(dry_run_node rclcpp)
 
 add_executable(input_monitor_node src/input_monitor_main.cpp)
-target_link_libraries(input_monitor_node PRIVATE ${PROJECT_NAME}_core)
+target_link_libraries(input_monitor_node ${PROJECT_NAME}_core)
 ament_target_dependencies(input_monitor_node
   rclcpp sensor_msgs bodyctrl_msgs tienkung_interfaces)
 target_compile_options(input_monitor_node PRIVATE -Wall -Wextra -Wpedantic)

@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
+
+#include <builtin_interfaces/msg/time.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -44,6 +47,16 @@ Eigen::VectorXf map_copy(const std::vector<float> & values)
 {
   return Eigen::Map<const Eigen::VectorXf>(
     values.data(), static_cast<Eigen::Index>(values.size()));
+}
+
+builtin_interfaces::msg::Time time_message(const rclcpp::Time & time)
+{
+  constexpr int64_t nanoseconds_per_second = 1'000'000'000;
+  const int64_t nanoseconds = time.nanoseconds();
+  builtin_interfaces::msg::Time message;
+  message.sec = static_cast<int32_t>(nanoseconds / nanoseconds_per_second);
+  message.nanosec = static_cast<uint32_t>(nanoseconds % nanoseconds_per_second);
+  return message;
 }
 
 }  // namespace
@@ -212,7 +225,7 @@ private:
   void publish_control_mode(ControlMode mode)
   {
     tienkung_interfaces::msg::ControlMode message;
-    message.header.stamp = node_.get_clock()->now().to_msg();
+    message.header.stamp = time_message(node_.get_clock()->now());
     message.mode = static_cast<unsigned char>(mode);
     control_mode_publisher_->publish(message);
   }
@@ -222,7 +235,7 @@ private:
     bodyctrl_msgs::msg::CmdMotorCtrl leg_message;
     bodyctrl_msgs::msg::CmdMotorCtrl arm_message;
     bodyctrl_msgs::msg::CmdSetMotorPosition waist_message;
-    const auto stamp = node_.get_clock()->now().to_msg();
+    const auto stamp = time_message(node_.get_clock()->now());
     leg_message.header.stamp = stamp;
     arm_message.header.stamp = stamp;
     waist_message.header.stamp = stamp;
@@ -278,7 +291,8 @@ private:
       now, state, joystick, latest_motion_, state_ready, motion_ready);
     publish_control_mode(step.mode);
 
-    const bool publish = mode_ == PolicyNodeMode::Production || step.mode == ControlMode::Zero;
+    const bool publish = mode_ == PolicyNodeMode::Production ||
+      step.mode == ControlMode::Zero || step.mode == ControlMode::Stop;
     if (publish) {
       const Eigen::VectorXf effective_kp = step.mode == ControlMode::Stop ?
         Eigen::VectorXf::Zero(kp_.size()) : kp_;

@@ -122,7 +122,7 @@ public:
   }
 
 private:
-  double now_sec() const
+  double now_sec()
   {
     return get_clock()->now().seconds();
   }
