@@ -136,6 +136,12 @@ RobotConfig load_robot_config(const std::string & path)
   config.waist_command.speed = required<float>(waist, "speed");
   config.waist_command.current = required<float>(waist, "current");
 
+  const auto fixed_arm = root["fixed_arm_command"];
+  config.fixed_arm_command.ids = required<std::vector<int>>(fixed_arm, "ids");
+  config.fixed_arm_command.position = required<float>(fixed_arm, "position");
+  config.fixed_arm_command.kp = required<float>(fixed_arm, "kp");
+  config.fixed_arm_command.kd = required<float>(fixed_arm, "kd");
+
   if (config.waist_command.ids.empty() ||
     !std::isfinite(config.waist_command.position) ||
     !(config.waist_command.speed >= 0.0F) ||
@@ -144,6 +150,14 @@ RobotConfig load_robot_config(const std::string & path)
     !std::isfinite(config.waist_command.current))
   {
     throw std::runtime_error("waist command configuration is invalid");
+  }
+
+  if (config.fixed_arm_command.ids.empty() ||
+    !std::isfinite(config.fixed_arm_command.position) ||
+    !(config.fixed_arm_command.kp >= 0.0F) || !std::isfinite(config.fixed_arm_command.kp) ||
+    !(config.fixed_arm_command.kd >= 0.0F) || !std::isfinite(config.fixed_arm_command.kd))
+  {
+    throw std::runtime_error("fixed arm command configuration is invalid");
   }
 
   const std::size_t expected_proprio = 3 + 2 + 3 * config.motor_num;
@@ -245,6 +259,11 @@ RobotConfig load_robot_config(const std::string & path)
       throw std::runtime_error("can_id_by_index contains duplicate IDs");
     }
     config.index_by_can_id.emplace(can_id, index);
+  }
+  for (const int can_id : config.fixed_arm_command.ids) {
+    if (!can_ids.insert(can_id).second) {
+      throw std::runtime_error("fixed_arm_command.ids contains duplicate or managed CAN IDs");
+    }
   }
   return config;
 }

@@ -162,16 +162,32 @@ TEST(RobotIo, BuildsLegAndArmGroupsFromConfig)
   auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
   config.ankle_transmission.kind = "identity";
   tk::RobotIo robot_io(config);
+  robot_io.ingest_arm_status(
+    {{15, 0.1F, 0.0F, 0.0F}, {16, 0.2F, 0.0F, 0.0F}, {17, 0.3F, 0.0F, 0.0F},
+      {25, 0.4F, 0.0F, 0.0F}, {26, 0.5F, 0.0F, 0.0F}, {27, 0.6F, 0.0F, 0.0F}},
+    1.0);
+  const auto state = robot_io.snapshot();
+  EXPECT_TRUE(state.fixed_arm_complete);
+  EXPECT_TRUE(state.fixed_arm_position.isApprox(
+    Eigen::VectorXf::LinSpaced(config.fixed_arm_command.ids.size(), 0.1F, 0.6F)));
   const auto target = Eigen::Map<const Eigen::VectorXf>(
     config.default_dof_pos.data(), config.default_dof_pos.size());
   const auto kp = Eigen::Map<const Eigen::VectorXf>(
     config.joint_kp.data(), config.joint_kp.size());
   const auto kd = Eigen::Map<const Eigen::VectorXf>(
     config.joint_kd.data(), config.joint_kd.size());
-  const auto command = robot_io.build_command(target, kp, kd);
+  const auto fixed_arm_target = Eigen::VectorXf::Constant(
+    config.fixed_arm_command.ids.size(), 0.25F);
+  const auto command = robot_io.build_command(
+    target, kp, kd, Eigen::VectorXf(), Eigen::VectorXf(), fixed_arm_target);
   ASSERT_EQ(command.leg.size(), 12U);
-  ASSERT_EQ(command.arm.size(), 8U);
+  ASSERT_EQ(command.arm.size(), 14U);
   EXPECT_EQ(command.leg.front().can_id, 51);
   EXPECT_EQ(command.arm.front().can_id, 11);
+  EXPECT_EQ(command.arm[8].can_id, 15);
+  EXPECT_EQ(command.arm.back().can_id, 27);
+  EXPECT_FLOAT_EQ(command.arm[8].position, 0.25F);
+  EXPECT_FLOAT_EQ(command.arm[8].kp, 10.0F);
+  EXPECT_FLOAT_EQ(command.arm[8].kd, 1.0F);
   EXPECT_FLOAT_EQ(command.leg.front().kp, 700.0F);
 }

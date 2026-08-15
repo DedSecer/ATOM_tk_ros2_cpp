@@ -31,6 +31,13 @@ struct WaistCommandConfig {
   float current{};
 };
 
+struct FixedArmCommandConfig {
+  std::vector<int> ids;
+  float position{};
+  float kp{};
+  float kd{};
+};
+
 struct RobotConfig {
   std::string robot;
   std::size_t motor_num{};
@@ -56,6 +63,7 @@ struct RobotConfig {
   bool enable_jump_filter{true};
   AnkleTransmissionConfig ankle_transmission;
   WaistCommandConfig waist_command;
+  FixedArmCommandConfig fixed_arm_command;
 };
 
 RobotConfig load_robot_config(const std::string & path);

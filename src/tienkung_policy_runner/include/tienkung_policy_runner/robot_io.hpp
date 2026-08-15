@@ -24,6 +24,7 @@ struct BodyState {
   Eigen::VectorXf dof_position;
   Eigen::VectorXf dof_velocity;
   Eigen::VectorXf dof_torque;
+  Eigen::VectorXf fixed_arm_position;
   Eigen::Vector3f rpy{Eigen::Vector3f::Zero()};
   Eigen::Vector3f angular_velocity{Eigen::Vector3f::Zero()};
   double leg_timestamp_sec{};
@@ -31,6 +32,7 @@ struct BodyState {
   double imu_timestamp_sec{};
   bool leg_complete{false};
   bool arm_complete{false};
+  bool fixed_arm_complete{false};
 };
 
 struct MotorCommand {
@@ -74,7 +76,8 @@ public:
     const Eigen::VectorXf & kp,
     const Eigen::VectorXf & kd,
     const Eigen::VectorXf & target_velocity = Eigen::VectorXf(),
-    const Eigen::VectorXf & torque = Eigen::VectorXf()) const;
+    const Eigen::VectorXf & torque = Eigen::VectorXf(),
+    const Eigen::VectorXf & fixed_arm_target_position = Eigen::VectorXf()) const;
 
 private:
   void ingest_motor_status(const std::vector<MotorSample> & samples);
@@ -91,6 +94,7 @@ private:
   Eigen::VectorXf last_raw_current_;
   Eigen::VectorXf zero_count_;
   std::vector<bool> valid_mask_;
+  std::vector<bool> fixed_arm_valid_mask_;
   BodyState state_;
   std::optional<JoystickCommand> last_joystick_;
 };

@@ -15,6 +15,7 @@ namespace tienkung_policy_runner {
 struct RuntimeStep {
   ControlMode mode{ControlMode::Stop};
   Eigen::VectorXf target_position;
+  Eigen::VectorXf fixed_arm_target_position;
   Eigen::VectorXf observation;
   Eigen::VectorXf raw_action;
   bool inference_executed{false};
@@ -50,6 +51,7 @@ private:
   bool infer_in_inactive_modes_{};
   Eigen::VectorXf last_action_;
   Eigen::VectorXf zero_start_position_;
+  Eigen::VectorXf zero_start_fixed_arm_position_;
   std::optional<double> zero_start_time_sec_;
   ControlMode previous_mode_{ControlMode::Stop};
 };

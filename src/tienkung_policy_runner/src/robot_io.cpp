@@ -39,11 +39,14 @@ RobotIo::RobotIo(const RobotConfig & config)
   last_raw_velocity_(Eigen::VectorXf::Zero(config.motor_num)),
   last_raw_current_(Eigen::VectorXf::Zero(config.motor_num)),
   zero_count_(Eigen::VectorXf::Zero(config.motor_num)),
-  valid_mask_(config.motor_num, false)
+  valid_mask_(config.motor_num, false),
+  fixed_arm_valid_mask_(config.fixed_arm_command.ids.size(), false)
 {
   state_.dof_position = Eigen::VectorXf::Zero(config.motor_num);
   state_.dof_velocity = Eigen::VectorXf::Zero(config.motor_num);
   state_.dof_torque = Eigen::VectorXf::Zero(config.motor_num);
+  state_.fixed_arm_position = Eigen::VectorXf::Constant(
+    config.fixed_arm_command.ids.size(), config.fixed_arm_command.position);
 }
 
 void RobotIo::ingest_motor_status(const std::vector<MotorSample> & samples)
@@ -53,6 +56,15 @@ void RobotIo::ingest_motor_status(const std::vector<MotorSample> & samples)
     if (!std::isfinite(sample.position) || !std::isfinite(sample.velocity) ||
       !std::isfinite(sample.current))
     {
+      continue;
+    }
+    const auto fixed_arm = std::find(
+      config_.fixed_arm_command.ids.begin(), config_.fixed_arm_command.ids.end(), sample.can_id);
+    if (fixed_arm != config_.fixed_arm_command.ids.end()) {
+      const auto index = static_cast<std::size_t>(
+        fixed_arm - config_.fixed_arm_command.ids.begin());
+      state_.fixed_arm_position[static_cast<Eigen::Index>(index)] = sample.position;
+      fixed_arm_valid_mask_[index] = true;
       continue;
     }
     const auto found = config_.index_by_can_id.find(sample.can_id);
@@ -96,6 +108,8 @@ void RobotIo::ingest_arm_status(
   ingest_motor_status(samples);
   state_.arm_timestamp_sec = stamp_sec;
   state_.arm_complete = all_valid(config_.arm_indices);
+  state_.fixed_arm_complete = std::all_of(
+    fixed_arm_valid_mask_.begin(), fixed_arm_valid_mask_.end(), [](bool valid) {return valid;});
 }
 
 void RobotIo::ingest_imu(
@@ -138,13 +152,20 @@ RobotCommand RobotIo::build_command(
   const Eigen::VectorXf & kp,
   const Eigen::VectorXf & kd,
   const Eigen::VectorXf & target_velocity,
-  const Eigen::VectorXf & torque) const
+  const Eigen::VectorXf & torque,
+  const Eigen::VectorXf & fixed_arm_target_position) const
 {
   require_size(target_position, config_.motor_num, "target_position");
   require_size(kp, config_.motor_num, "kp");
   require_size(kd, config_.motor_num, "kd");
   const auto velocity = zeros_or_value(target_velocity, target_position.size());
   const auto torque_value = zeros_or_value(torque, target_position.size());
+  const auto fixed_arm_position = fixed_arm_target_position.size() == 0 ?
+    Eigen::VectorXf::Constant(
+      config_.fixed_arm_command.ids.size(), config_.fixed_arm_command.position) :
+    fixed_arm_target_position;
+  require_size(
+    fixed_arm_position, config_.fixed_arm_command.ids.size(), "fixed_arm_target_position");
   auto motor_space = apply_joint_to_motor(
     {target_position, velocity, torque_value}, config_.ankle_transmission, *transmission_);
   const auto calibrated = calibration_.convert_command(
@@ -165,6 +186,16 @@ RobotCommand RobotIo::build_command(
   RobotCommand command;
   command.leg = build_group(config_.leg_indices);
   command.arm = build_group(config_.arm_indices);
+  const bool position_control_enabled = kp.maxCoeff() > 0.0F;
+  for (std::size_t index = 0; index < config_.fixed_arm_command.ids.size(); ++index) {
+    command.arm.push_back({
+      config_.fixed_arm_command.ids[index],
+      position_control_enabled ? config_.fixed_arm_command.kp : 0.0F,
+      position_control_enabled ? config_.fixed_arm_command.kd : 0.0F,
+      fixed_arm_position[static_cast<Eigen::Index>(index)],
+      0.0F,
+      0.0F});
+  }
   for (const int can_id : config_.waist_command.ids) {
     command.waist.push_back({
       can_id, config_.waist_command.position, config_.waist_command.speed,

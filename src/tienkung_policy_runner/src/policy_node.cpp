@@ -282,7 +282,7 @@ private:
     const auto fresh = [now, this](double stamp) {
         return stamp > 0.0 && now - stamp <= state_timeout_sec_;
       };
-    const bool state_ready = state.leg_complete && state.arm_complete &&
+    const bool state_ready = state.leg_complete && state.arm_complete && state.fixed_arm_complete &&
       fresh(state.leg_timestamp_sec) && fresh(state.arm_timestamp_sec) &&
       fresh(state.imu_timestamp_sec);
     const bool motion_ready = !require_motion_source_ ||
@@ -296,7 +296,9 @@ private:
     if (publish) {
       const Eigen::VectorXf effective_kp = step.mode == ControlMode::Stop ?
         Eigen::VectorXf::Zero(kp_.size()) : kp_;
-      publish_robot_command(robot_io_->build_command(step.target_position, effective_kp, kd_));
+      publish_robot_command(robot_io_->build_command(
+        step.target_position, effective_kp, kd_, Eigen::VectorXf(), Eigen::VectorXf(),
+        step.fixed_arm_target_position));
     }
 
     if (logger_) {

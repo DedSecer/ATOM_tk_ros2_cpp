@@ -20,7 +20,9 @@ PolicyRuntime::PolicyRuntime(
   infer_in_inactive_modes_(infer_in_inactive_modes),
   last_action_(Eigen::VectorXf::Zero(config.actions_size)),
   zero_start_position_(Eigen::Map<const Eigen::VectorXf>(
-      config.default_dof_pos.data(), config.default_dof_pos.size()))
+      config.default_dof_pos.data(), config.default_dof_pos.size())),
+  zero_start_fixed_arm_position_(Eigen::VectorXf::Constant(
+      config.fixed_arm_command.ids.size(), config.fixed_arm_command.position))
 {
 }
 
@@ -38,6 +40,7 @@ RuntimeStep PolicyRuntime::step(
   if (result.mode == ControlMode::Zero && previous_mode_ != ControlMode::Zero) {
     zero_start_time_sec_ = now_sec;
     zero_start_position_ = state.dof_position;
+    zero_start_fixed_arm_position_ = state.fixed_arm_position;
   } else if (result.mode != ControlMode::Zero) {
     zero_start_time_sec_.reset();
   }
@@ -48,6 +51,7 @@ RuntimeStep PolicyRuntime::step(
     if (!zero_start_time_sec_) {
       zero_start_time_sec_ = now_sec;
       zero_start_position_ = state.dof_position;
+      zero_start_fixed_arm_position_ = state.fixed_arm_position;
     }
     const float alpha = static_cast<float>(std::clamp(
         (now_sec - *zero_start_time_sec_) / zero_duration_sec_, 0.0, 1.0));
@@ -55,6 +59,10 @@ RuntimeStep PolicyRuntime::step(
       config_.default_dof_pos.data(), config_.default_dof_pos.size());
     result.target_position = zero_start_position_ +
       (default_position - zero_start_position_) * quintic_blend(alpha);
+    result.fixed_arm_target_position = zero_start_fixed_arm_position_ +
+      (Eigen::VectorXf::Constant(
+        zero_start_fixed_arm_position_.size(), config_.fixed_arm_command.position) -
+      zero_start_fixed_arm_position_) * quintic_blend(alpha);
   }
 
   const bool run_inference = result.mode == ControlMode::Policy || infer_in_inactive_modes_;
