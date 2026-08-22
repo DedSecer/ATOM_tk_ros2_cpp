@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Policy JSONL Visualizer</title>
+  <style>
+    :root { color-scheme: dark; --page:#0b1120; --panel:#141c2d; --border:#28364f; --text:#e4edf9; --muted:#93a4be; --danger:#fb7185; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-width:320px; background:var(--page); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1440px; margin:0 auto; padding:28px; }
+    h1 { margin:0; font-size:clamp(1.6rem,3vw,2.25rem); }
+    h2 { margin:0 0 14px; font-size:1.1rem; }
+    p { color:var(--muted); line-height:1.55; }
+    .panel { background:linear-gradient(145deg,rgba(30,41,59,.96),rgba(15,23,42,.96)); border:1px solid var(--border); border-radius:14px; padding:20px; margin-top:20px; }
+    .controls { display:grid; grid-template-columns:minmax(220px,1.8fr) minmax(160px,1fr) minmax(160px,1fr); gap:16px; align-items:end; }
+    label { display:grid; gap:8px; color:var(--muted); font-size:.9rem; }
+    input,select { width:100%; border:1px solid var(--border); border-radius:8px; padding:10px; background:#0f172a; color:var(--text); font:inherit; }
+    .hint { margin:12px 0 0; font-size:.85rem; }
+    .error { color:var(--danger); min-height:1.3em; margin:12px 0 0; }
+    .stats { display:grid; grid-template-columns:repeat(5,minmax(135px,1fr)); gap:12px; }
+    .stat { background:rgba(15,23,42,.75); border:1px solid var(--border); border-radius:10px; padding:14px; }
+    .stat span { display:block; color:var(--muted); font-size:.78rem; }
+    .stat strong { display:block; margin-top:6px; font-size:1.1rem; overflow-wrap:anywhere; }
+    .chart { width:100%; height:390px; display:block; background:rgba(15,23,42,.75); border-radius:8px; cursor:crosshair; }
+    .legend { display:flex; flex-wrap:wrap; gap:14px; margin:0 0 10px; color:var(--muted); font-size:.82rem; }
+    .legend span::before { content:""; display:inline-block; width:10px; height:10px; margin-right:6px; border-radius:50%; background:var(--color); }
+    .hidden { display:none; }
+    code { color:#c4b5fd; }
+    @media (max-width:900px) { main { padding:18px; } .controls,.stats { grid-template-columns:1fr; } .chart { height:330px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Policy JSONL Visualizer</h1>
+      <p>离线可用，不依赖任何 CDN 或第三方 JavaScript。上传 JSONL 后通过 <code>target</code> 或 <code>dof_pos</code> 自动识别 Tienkung（20 DOF）与 Walker（30 DOF）。</p>
+    </header>
+
+    <section class="panel controls">
+      <label>JSONL 日志文件<input id="file-input" type="file" accept=".jsonl,.txt,application/json"></label>
+      <label>机器人类型<select id="robot-select" disabled><option value="auto">自动识别</option><option value="tienkung">Tienkung（20 DOF）</option><option value="walker">Walker（30 DOF）</option></select></label>
+      <label>关节<select id="joint-select" disabled></select></label>
+    </section>
+
+    <section id="status-panel" class="panel hidden">
+      <div class="stats">
+        <div class="stat"><span>机器人</span><strong id="stat-robot">-</strong></div>
+        <div class="stat"><span>有效帧数</span><strong id="stat-frames">0</strong></div>
+        <div class="stat"><span>持续时间</span><strong id="stat-duration">0.00 s</strong></div>
+        <div class="stat"><span>模式</span><strong id="stat-modes">-</strong></div>
+        <div class="stat"><span>POLICY 频率</span><strong id="stat-frequency">-</strong></div>
+      </div>
+      <p id="layout-hint" class="hint"></p>
+    </section>
+
+    <p id="error" class="error"></p>
+
+    <section id="charts-panel" class="hidden">
+      <article class="panel"><h2>关节位置跟踪</h2><div class="legend"><span style="--color:#c4b5fd">Reference</span><span style="--color:#60a5fa">Target</span><span style="--color:#34d399">Actual</span></div><canvas id="position-chart" class="chart"></canvas></article>
+      <article class="panel"><h2>关节速度</h2><div class="legend"><span style="--color:#fbbf24">Actual velocity</span></div><canvas id="velocity-chart" class="chart"></canvas></article>
+      <article class="panel"><h2>IMU 姿态</h2><div class="legend"><span style="--color:#f472b6">Roll</span><span style="--color:#818cf8">Pitch</span></div><canvas id="orientation-chart" class="chart"></canvas></article>
+      <article class="panel"><h2>IMU 角速度</h2><div class="legend"><span style="--color:#f87171">wx</span><span style="--color:#a78bfa">wy</span><span style="--color:#2dd4bf">wz</span></div><canvas id="angular-velocity-chart" class="chart"></canvas></article>
+      <article class="panel"><h2>Motion Reference 根部速度</h2><div class="legend"><span style="--color:#fb923c">vx</span><span style="--color:#a3e635">vy</span><span style="--color:#38bdf8">yaw rate</span></div><canvas id="reference-velocity-chart" class="chart"></canvas></article>
+    </section>
+  </main>
+
+  <script>
+    const ROBOTS = {
+      tienkung: { label:'Tienkung', dof:20, mimicSize:26, joints:['hip_roll_l','hip_pitch_l','hip_yaw_l','knee_pitch_l','ankle_pitch_l','ankle_roll_l','hip_roll_r','hip_pitch_r','hip_yaw_r','knee_pitch_r','ankle_pitch_r','ankle_roll_r','shoulder_pitch_l','shoulder_roll_l','shoulder_yaw_l','elbow_pitch_l','shoulder_pitch_r','shoulder_roll_r','shoulder_yaw_r','elbow_pitch_r'] },
+      walker: { label:'Walker', dof:30, mimicSize:36, joints:['hip_roll_l','hip_pitch_l','hip_yaw_l','knee_pitch_l','ankle_pitch_l','ankle_roll_l','hip_roll_r','hip_pitch_r','hip_yaw_r','knee_pitch_r','ankle_pitch_r','ankle_roll_r','waist_yaw','head_yaw','head_pitch','head_roll','shoulder_pitch_l','shoulder_roll_l','shoulder_yaw_l','elbow_pitch_l','elbow_yaw_l','wrist_pitch_l','wrist_roll_l','shoulder_pitch_r','shoulder_roll_r','shoulder_yaw_r','elbow_pitch_r','elbow_yaw_r','wrist_pitch_r','wrist_roll_r'] }
+    };
+
+    const fileInput = document.getElementById('file-input');
+    const robotSelect = document.getElementById('robot-select');
+    const jointSelect = document.getElementById('joint-select');
+    const statusPanel = document.getElementById('status-panel');
+    const chartsPanel = document.getElementById('charts-panel');
+    const errorElement = document.getElementById('error');
+    let logFrames = [];
+    let detectedRobot = null;
+
+    const numberAt = (values, index, multiplier = 1) => Array.isArray(values) && Number.isFinite(values[index]) ? values[index] * multiplier : null;
+    const inferRobot = (frames) => {
+      const sizes = frames.flatMap((frame) => [frame.target?.length, frame.dof_pos?.length]).filter(Number.isInteger);
+      return sizes.includes(30) ? 'walker' : sizes.includes(20) ? 'tienkung' : null;
+    };
+    const activeRobot = () => robotSelect.value === 'auto' ? detectedRobot : robotSelect.value;
+    const showError = (message = '') => { errorElement.textContent = message; };
+    const canvasIds = ['position-chart','velocity-chart','orientation-chart','angular-velocity-chart','reference-velocity-chart'];
+
+    function populateJointSelect() {
+      const robot = ROBOTS[activeRobot()];
+      jointSelect.replaceChildren();
+      if (!robot) return;
+      robot.joints.forEach((joint, index) => {
+        const option = document.createElement('option');
+        option.value = index;
+        option.textContent = `[${index}] ${joint}`;
+        jointSelect.appendChild(option);
+      });
+      jointSelect.disabled = false;
+    }
+
+    function parseJsonl(text) {
+      return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).flatMap((line, index) => {
+        try { const frame = JSON.parse(line); return Number.isFinite(frame.timestamp) ? [frame] : []; }
+        catch { console.warn(`Skipping invalid JSONL line ${index + 1}`); return []; }
+      }).sort((left, right) => left.timestamp - right.timestamp);
+    }
+
+    function policyRanges(times) {
+      const ranges = [];
+      let start = null;
+      logFrames.forEach((frame, index) => {
+        if (frame.mode === 'POLICY' && start === null) start = times[index];
+        if (frame.mode !== 'POLICY' && start !== null) { ranges.push([start, times[index]]); start = null; }
+      });
+      if (start !== null) ranges.push([start, times.at(-1)]);
+      return ranges;
+    }
+
+    function seriesBounds(series) {
+      const values = series.flatMap(({ values }) => values).filter(Number.isFinite);
+      if (!values.length) return [-1, 1];
+      let min = Math.min(...values), max = Math.max(...values);
+      if (min === max) { const padding = Math.max(Math.abs(min) * .1, .1); return [min - padding, max + padding]; }
+      const padding = (max - min) * .08;
+      return [min - padding, max + padding];
+    }
+
+    function drawChart(id, title, yLabel, times, series) {
+      const canvas = document.getElementById(id);
+      const rect = canvas.getBoundingClientRect();
+      const scale = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.floor(rect.width * scale));
+      const height = Math.max(1, Math.floor(rect.height * scale));
+      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      const w = rect.width, h = rect.height;
+      ctx.clearRect(0, 0, w, h);
+      const margin = { left: 64, right: 20, top: 30, bottom: 42 };
+      const plotW = Math.max(1, w - margin.left - margin.right);
+      const plotH = Math.max(1, h - margin.top - margin.bottom);
+      const [yMin, yMax] = seriesBounds(series);
+      const xMin = times[0] ?? 0, xMax = times.at(-1) ?? xMin + 1;
+      const xSpan = Math.max(xMax - xMin, 1e-9), ySpan = Math.max(yMax - yMin, 1e-9);
+      const x = (value) => margin.left + ((value - xMin) / xSpan) * plotW;
+      const y = (value) => margin.top + (1 - ((value - yMin) / ySpan)) * plotH;
+
+      ctx.fillStyle = 'rgba(15,23,42,.75)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(52,211,153,.09)';
+      policyRanges(times).forEach(([start, end]) => ctx.fillRect(x(start), margin.top, Math.max(1, x(end) - x(start)), plotH));
+      ctx.strokeStyle = '#28364f'; ctx.lineWidth = 1;
+      ctx.font = '12px system-ui'; ctx.fillStyle = '#93a4be';
+      for (let tick = 0; tick <= 5; tick += 1) {
+        const value = yMin + ((yMax - yMin) * tick) / 5;
+        const py = y(value);
+        ctx.beginPath(); ctx.moveTo(margin.left, py); ctx.lineTo(w - margin.right, py); ctx.stroke();
+        ctx.textAlign = 'right'; ctx.fillText(value.toFixed(3), margin.left - 8, py + 4);
+      }
+      for (let tick = 0; tick <= 5; tick += 1) {
+        const value = xMin + ((xMax - xMin) * tick) / 5;
+        const px = x(value);
+        ctx.beginPath(); ctx.moveTo(px, margin.top); ctx.lineTo(px, h - margin.bottom); ctx.stroke();
+        ctx.textAlign = 'center'; ctx.fillText(value.toFixed(2), px, h - margin.bottom + 18);
+      }
+      ctx.strokeStyle = '#60718f';
+      ctx.beginPath(); ctx.moveTo(margin.left, margin.top); ctx.lineTo(margin.left, h - margin.bottom); ctx.lineTo(w - margin.right, h - margin.bottom); ctx.stroke();
+      ctx.fillStyle = '#e4edf9'; ctx.font = '600 14px system-ui'; ctx.textAlign = 'left'; ctx.fillText(title, margin.left, 18);
+      ctx.fillStyle = '#93a4be'; ctx.font = '12px system-ui'; ctx.textAlign = 'center'; ctx.fillText('时间 (s)', margin.left + plotW / 2, h - 10);
+      ctx.save(); ctx.translate(15, margin.top + plotH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(yLabel, 0, 0); ctx.restore();
+
+      series.forEach(({ values, color }) => {
+        ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.beginPath(); let connected = false;
+        values.forEach((value, index) => {
+          if (!Number.isFinite(value)) { connected = false; return; }
+          const px = x(times[index]), py = y(value);
+          if (!connected) { ctx.moveTo(px, py); connected = true; } else { ctx.lineTo(px, py); }
+        });
+        ctx.stroke();
+      });
+    }
+
+    function renderStats() {
+      const robot = ROBOTS[activeRobot()];
+      const duration = logFrames.at(-1).timestamp - logFrames[0].timestamp;
+      const modes = [...new Set(logFrames.map((frame) => frame.mode).filter(Boolean))];
+      const policyTimes = logFrames.filter((frame) => frame.mode === 'POLICY').map((frame) => frame.timestamp);
+      const frequency = policyTimes.length > 1 ? (policyTimes.length - 1) / (policyTimes.at(-1) - policyTimes[0]) : null;
+      document.getElementById('stat-robot').textContent = `${robot.label} (${robot.dof} DOF)`;
+      document.getElementById('stat-frames').textContent = String(logFrames.length);
+      document.getElementById('stat-duration').textContent = `${duration.toFixed(2)} s`;
+      document.getElementById('stat-modes').textContent = modes.join(', ') || '-';
+      document.getElementById('stat-frequency').textContent = frequency && Number.isFinite(frequency) ? `${frequency.toFixed(1)} Hz` : 'N/A';
+      document.getElementById('layout-hint').textContent = `当前帧 IMU：ang_vel=obs[${robot.mimicSize}:${robot.mimicSize + 3}]，roll/pitch=obs[${robot.mimicSize + 3}:${robot.mimicSize + 5}]。绿色背景表示 POLICY 模式。`;
+    }
+
+    function renderPlots() {
+      const robot = ROBOTS[activeRobot()];
+      if (!robot || !logFrames.length) return;
+      const jointIndex = Number(jointSelect.value);
+      const times = logFrames.map((frame) => frame.timestamp - logFrames[0].timestamp);
+      const proprioStart = robot.mimicSize;
+      const jointName = robot.joints[jointIndex];
+      drawChart('position-chart', `${robot.label} · ${jointName} 位置`, '位置 (rad)', times, [
+        { values:logFrames.map((frame) => numberAt(frame.motion_ref, 6 + jointIndex)), color:'#c4b5fd' },
+        { values:logFrames.map((frame) => numberAt(frame.target, jointIndex)), color:'#60a5fa' },
+        { values:logFrames.map((frame) => numberAt(frame.dof_pos, jointIndex)), color:'#34d399' }
+      ]);
+      drawChart('velocity-chart', `${robot.label} · ${jointName} 速度`, '速度 (rad/s)', times, [{ values:logFrames.map((frame) => numberAt(frame.dof_vel, jointIndex)), color:'#fbbf24' }]);
+      drawChart('orientation-chart', 'IMU 姿态（当前帧 proprio）', '角度 (rad)', times, [
+        { values:logFrames.map((frame) => numberAt(frame.obs, proprioStart + 3)), color:'#f472b6' },
+        { values:logFrames.map((frame) => numberAt(frame.obs, proprioStart + 4)), color:'#818cf8' }
+      ]);
+      drawChart('angular-velocity-chart', 'IMU 角速度（已反归一化）', '角速度 (rad/s)', times, [
+        { values:logFrames.map((frame) => numberAt(frame.obs, proprioStart, 4)), color:'#f87171' },
+        { values:logFrames.map((frame) => numberAt(frame.obs, proprioStart + 1, 4)), color:'#a78bfa' },
+        { values:logFrames.map((frame) => numberAt(frame.obs, proprioStart + 2, 4)), color:'#2dd4bf' }
+      ]);
+      drawChart('reference-velocity-chart', 'Motion reference 根部速度', 'm/s 或 rad/s', times, [
+        { values:logFrames.map((frame) => numberAt(frame.motion_ref, 0)), color:'#fb923c' },
+        { values:logFrames.map((frame) => numberAt(frame.motion_ref, 1)), color:'#a3e635' },
+        { values:logFrames.map((frame) => numberAt(frame.motion_ref, 5)), color:'#38bdf8' }
+      ]);
+    }
+
+    function refresh() {
+      showError();
+      if (!activeRobot()) { statusPanel.classList.add('hidden'); chartsPanel.classList.add('hidden'); showError('无法根据日志中的 target 或 dof_pos 长度识别机器人类型。日志需要包含 20 或 30 维关节向量。'); return; }
+      populateJointSelect(); renderStats(); statusPanel.classList.remove('hidden'); chartsPanel.classList.remove('hidden'); renderPlots();
+    }
+
+    fileInput.addEventListener('change', async (event) => {
+      const [file] = event.target.files;
+      if (!file) return;
+      try {
+        logFrames = parseJsonl(await file.text());
+        if (!logFrames.length) throw new Error('文件中没有包含有效 timestamp 的 JSONL 记录。');
+        detectedRobot = inferRobot(logFrames); robotSelect.disabled = false; robotSelect.value = 'auto'; refresh();
+      } catch (error) { logFrames = []; detectedRobot = null; statusPanel.classList.add('hidden'); chartsPanel.classList.add('hidden'); showError(error.message || '读取日志失败。'); }
+    });
+    robotSelect.addEventListener('change', refresh);
+    jointSelect.addEventListener('change', renderPlots);
+    window.addEventListener('resize', () => { if (logFrames.length && activeRobot()) renderPlots(); });
+  </script>
+</body>
+</html>
