@@ -51,6 +51,7 @@ struct RobotConfig {
   std::vector<int> leg_indices;
   std::vector<int> arm_indices;
   std::vector<int> head_indices;
+  bool require_head_status{true};
   std::vector<int> waist_indices;
   std::vector<float> default_dof_pos;
   std::vector<int> blocked_action_indices;

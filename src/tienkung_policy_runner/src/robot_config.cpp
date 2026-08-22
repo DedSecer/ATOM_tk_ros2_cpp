@@ -104,6 +104,8 @@ RobotConfig load_robot_config(const std::string & path)
   config.arm_indices = required<std::vector<int>>(root, "arm_indices");
   config.head_indices = root["head_indices"] ?
     root["head_indices"].as<std::vector<int>>() : std::vector<int>{};
+  config.require_head_status = root["require_head_status"] ?
+    root["require_head_status"].as<bool>() : !config.head_indices.empty();
   config.waist_indices = root["waist_indices"] ?
     root["waist_indices"].as<std::vector<int>>() : std::vector<int>{};
   config.default_dof_pos = required_vector<float>(root, "default_dof_pos", config.motor_num);

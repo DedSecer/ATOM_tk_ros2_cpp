@@ -300,11 +300,11 @@ private:
     const auto fresh = [now, this](double stamp) {
         return stamp > 0.0 && now - stamp <= state_timeout_sec_;
       };
-    const bool head_ready = config_.head_indices.empty() || state.head_complete;
+    const bool head_ready = !config_.require_head_status || state.head_complete;
     const bool waist_ready = config_.waist_indices.empty() || state.waist_complete;
     const bool state_ready = state.leg_complete && state.arm_complete && head_ready && waist_ready &&
       state.fixed_arm_complete && fresh(state.leg_timestamp_sec) && fresh(state.arm_timestamp_sec) &&
-      (!config_.head_indices.empty() ? fresh(state.head_timestamp_sec) : true) &&
+      (config_.require_head_status ? fresh(state.head_timestamp_sec) : true) &&
       (!config_.waist_indices.empty() ? fresh(state.waist_timestamp_sec) : true) &&
       fresh(state.imu_timestamp_sec);
     const bool motion_ready = !require_motion_source_ ||

@@ -47,6 +47,7 @@ TEST(RobotConfig, LoadsWalkerContractAndBlockedHead)
   EXPECT_EQ(config.observation.n_proprio, 95U);
   EXPECT_EQ(config.observation.total_obs_size, 1477U);
   EXPECT_EQ(config.head_indices, (std::vector<int>{13, 14, 15}));
+  EXPECT_FALSE(config.require_head_status);
   EXPECT_EQ(config.blocked_action_indices, (std::vector<int>{13, 14, 15}));
   EXPECT_TRUE(config.fixed_arm_command.ids.empty());
 }
