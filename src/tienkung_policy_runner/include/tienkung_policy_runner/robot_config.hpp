@@ -50,7 +50,10 @@ struct RobotConfig {
   std::unordered_map<int, std::size_t> index_by_can_id;
   std::vector<int> leg_indices;
   std::vector<int> arm_indices;
+  std::vector<int> head_indices;
+  std::vector<int> waist_indices;
   std::vector<float> default_dof_pos;
+  std::vector<int> blocked_action_indices;
   float action_scale{};
   float clip_actions{};
   std::vector<float> joint_kp;

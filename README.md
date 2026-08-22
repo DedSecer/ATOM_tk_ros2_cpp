@@ -134,7 +134,27 @@ ros2 launch tienkung_bringup policy_runner.launch.py \
   enable_runtime_log:=true
 ```
 
-## 输入监控
+## Walker 适配（当前状态）
+
+Walker 使用独立配置和启动入口，不修改 Tienkung 的默认配置：
+
+```bash
+ros2 launch tienkung_bringup walker_dry_run.launch.py \
+  policy_path:=/abs/path/to/walker_policy.onnx \
+  manifest_path:=/abs/path/to/walker_policy_manifest.yaml
+```
+
+启动前检查 ONNX 输入/输出契约：
+
+```bash
+python3 src/tienkung_bringup/check_walker_policy.py \
+  /abs/path/to/walker_policy.onnx
+```
+
+Walker 当前契约为输入 `1477`、输出 `30`、50 Hz。头部动作索引 `13,14,15` 在 `walker_config.yaml` 中被阻断，策略推理仍保留这些维度以匹配训练模型，但动作后处理会将它们固定为默认位，并且不会生成头部命令消息。头部反馈仍订阅 `/head/status`，用于完整观测和状态 readiness。
+
+Walker 配置中的零点、方向、电流比例和踝关节传动必须替换为实机标定值。当前文件中的相关值是占位配置，不能直接用于上电控制。
+
 
 ```bash
 ros2 launch tienkung_bringup input_monitor.launch.py

@@ -129,7 +129,8 @@ if(BUILD_TESTING)
   if(TARGET test_policy_core)
     target_link_libraries(test_policy_core ${PROJECT_NAME}_core)
     target_compile_definitions(test_policy_core PRIVATE
-      TEST_ROBOT_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../tienkung_bringup/config/tg22_config.yaml")
+      TEST_ROBOT_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../tienkung_bringup/config/tg22_config.yaml"
+      TEST_WALKER_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../tienkung_bringup/config/walker_config.yaml")
   endif()
 endif()
 

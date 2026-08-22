@@ -29,9 +29,13 @@ struct BodyState {
   Eigen::Vector3f angular_velocity{Eigen::Vector3f::Zero()};
   double leg_timestamp_sec{};
   double arm_timestamp_sec{};
+  double head_timestamp_sec{};
+  double waist_timestamp_sec{};
   double imu_timestamp_sec{};
   bool leg_complete{false};
   bool arm_complete{false};
+  bool head_complete{false};
+  bool waist_complete{false};
   bool fixed_arm_complete{false};
 };
 
@@ -54,6 +58,7 @@ struct WaistCommand {
 struct RobotCommand {
   std::vector<MotorCommand> leg;
   std::vector<MotorCommand> arm;
+  std::vector<MotorCommand> head;
   std::vector<WaistCommand> waist;
 };
 
@@ -63,6 +68,8 @@ public:
 
   void ingest_leg_status(const std::vector<MotorSample> & samples, double stamp_sec);
   void ingest_arm_status(const std::vector<MotorSample> & samples, double stamp_sec);
+  void ingest_head_status(const std::vector<MotorSample> & samples, double stamp_sec);
+  void ingest_waist_status(const std::vector<MotorSample> & samples, double stamp_sec);
   void ingest_imu(
     const Eigen::Vector3f & rpy,
     const Eigen::Vector3f & angular_velocity,

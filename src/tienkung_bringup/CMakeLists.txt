@@ -8,5 +8,8 @@ install(DIRECTORY config launch
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )
+install(PROGRAMS check_walker_policy.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 ament_package()

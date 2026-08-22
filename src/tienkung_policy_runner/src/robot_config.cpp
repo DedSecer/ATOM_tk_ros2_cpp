@@ -102,7 +102,13 @@ RobotConfig load_robot_config(const std::string & path)
   config.can_id_by_index = required_vector<int>(root, "can_id_by_index", config.motor_num);
   config.leg_indices = required<std::vector<int>>(root, "leg_indices");
   config.arm_indices = required<std::vector<int>>(root, "arm_indices");
+  config.head_indices = root["head_indices"] ?
+    root["head_indices"].as<std::vector<int>>() : std::vector<int>{};
+  config.waist_indices = root["waist_indices"] ?
+    root["waist_indices"].as<std::vector<int>>() : std::vector<int>{};
   config.default_dof_pos = required_vector<float>(root, "default_dof_pos", config.motor_num);
+  config.blocked_action_indices = root["blocked_action_indices"] ?
+    root["blocked_action_indices"].as<std::vector<int>>() : std::vector<int>{};
   config.action_scale = required<float>(root, "action_scale");
   config.clip_actions = required<float>(root, "clip_actions");
   config.joint_kp = required_vector<float>(root, "joint_kp_p", config.motor_num);
@@ -142,8 +148,7 @@ RobotConfig load_robot_config(const std::string & path)
   config.fixed_arm_command.kp = required<float>(fixed_arm, "kp");
   config.fixed_arm_command.kd = required<float>(fixed_arm, "kd");
 
-  if (config.waist_command.ids.empty() ||
-    !std::isfinite(config.waist_command.position) ||
+  if (!std::isfinite(config.waist_command.position) ||
     !(config.waist_command.speed >= 0.0F) ||
     !std::isfinite(config.waist_command.speed) ||
     !(config.waist_command.current >= 0.0F) ||
@@ -152,8 +157,23 @@ RobotConfig load_robot_config(const std::string & path)
     throw std::runtime_error("waist command configuration is invalid");
   }
 
-  if (config.fixed_arm_command.ids.empty() ||
-    !std::isfinite(config.fixed_arm_command.position) ||
+  if (!config.waist_indices.empty()) {
+    if (config.waist_indices.size() != config.waist_command.ids.size()) {
+      throw std::runtime_error("waist_indices and waist_ids must have the same size");
+    }
+    for (std::size_t cursor = 0; cursor < config.waist_indices.size(); ++cursor) {
+      const int index = config.waist_indices[cursor];
+      if (config.can_id_by_index[static_cast<std::size_t>(index)] != config.waist_command.ids[cursor]) {
+        throw std::runtime_error("waist_indices do not match waist_ids CAN IDs");
+      }
+    }
+  }
+
+  if (config.robot == "tienkung" && config.waist_command.ids.empty()) {
+    throw std::runtime_error("Tienkung requires waist_ids");
+  }
+
+  if (!std::isfinite(config.fixed_arm_command.position) ||
     !(config.fixed_arm_command.kp >= 0.0F) || !std::isfinite(config.fixed_arm_command.kp) ||
     !(config.fixed_arm_command.kd >= 0.0F) || !std::isfinite(config.fixed_arm_command.kd))
   {
@@ -218,14 +238,35 @@ RobotConfig load_robot_config(const std::string & path)
 
   validate_indices(config.leg_indices, config.motor_num, "leg_indices");
   validate_indices(config.arm_indices, config.motor_num, "arm_indices");
+  validate_indices(config.head_indices, config.motor_num, "head_indices");
+  validate_indices(config.waist_indices, config.motor_num, "waist_indices");
+  validate_indices(
+    config.blocked_action_indices, config.actions_size, "blocked_action_indices");
+  std::set<int> blocked_actions(
+    config.blocked_action_indices.begin(), config.blocked_action_indices.end());
+  for (const int index : config.head_indices) {
+    if (blocked_actions.find(index) == blocked_actions.end()) {
+      throw std::runtime_error("Every head action must be listed in blocked_action_indices");
+    }
+  }
   std::set<int> command_indices(config.leg_indices.begin(), config.leg_indices.end());
   for (const int index : config.arm_indices) {
     if (!command_indices.insert(index).second) {
       throw std::runtime_error("leg_indices and arm_indices must not overlap");
     }
   }
+  for (const int index : config.head_indices) {
+    if (!command_indices.insert(index).second) {
+      throw std::runtime_error("head_indices overlap with another command group");
+    }
+  }
+  for (const int index : config.waist_indices) {
+    if (!command_indices.insert(index).second) {
+      throw std::runtime_error("waist_indices overlap with another command group");
+    }
+  }
   if (command_indices.size() != config.motor_num) {
-    throw std::runtime_error("leg_indices and arm_indices must cover every motor exactly once");
+    throw std::runtime_error("command index groups must cover every motor exactly once");
   }
   validate_indices(
     config.ankle_transmission.motor_indices, config.motor_num,

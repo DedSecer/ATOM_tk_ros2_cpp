@@ -100,7 +100,12 @@ Eigen::VectorXf postprocess_action(
   require_size(raw_action, config.actions_size, "raw_action");
   const float raw_action_limit = config.clip_actions / config.action_scale;
   const auto clipped = raw_action.array().max(-raw_action_limit).min(raw_action_limit);
-  return (clipped * config.action_scale).matrix() + map_vector(config.default_dof_pos);
+  Eigen::VectorXf target =
+    (clipped * config.action_scale).matrix() + map_vector(config.default_dof_pos);
+  for (const int index : config.blocked_action_indices) {
+    target[index] = config.default_dof_pos[static_cast<std::size_t>(index)];
+  }
+  return target;
 }
 
 Eigen::VectorXf default_mimic_observation(const RobotConfig & config)

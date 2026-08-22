@@ -133,6 +133,8 @@ private:
     node_.declare_parameter("control_mode_topic", "/tienkung/control_mode");
     node_.declare_parameter("leg_status_topic", "/leg/status");
     node_.declare_parameter("arm_status_topic", "/arm/status");
+    node_.declare_parameter("head_status_topic", "/head/status");
+    node_.declare_parameter("waist_status_topic", "/waist/status");
     node_.declare_parameter("imu_status_topic", "/imu/status");
     node_.declare_parameter("joy_topic", "/sbus_data");
     node_.declare_parameter("leg_command_topic", "/leg/cmd_ctrl");
@@ -154,6 +156,12 @@ private:
     arm_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::MotorStatusMsg>(
       parameter<std::string>("arm_status_topic"), 100,
       std::bind(&Impl::on_arm, this, _1));
+    head_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::MotorStatusMsg>(
+      parameter<std::string>("head_status_topic"), 100,
+      std::bind(&Impl::on_head, this, _1));
+    waist_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::MotorStatusMsg>(
+      parameter<std::string>("waist_status_topic"), 100,
+      std::bind(&Impl::on_waist, this, _1));
     imu_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::Imu>(
       parameter<std::string>("imu_status_topic"), 100,
       std::bind(&Impl::on_imu, this, _1));
@@ -203,6 +211,16 @@ private:
   void on_arm(const bodyctrl_msgs::msg::MotorStatusMsg::SharedPtr message)
   {
     robot_io_->ingest_arm_status(motor_samples(*message), now_sec());
+  }
+
+  void on_head(const bodyctrl_msgs::msg::MotorStatusMsg::SharedPtr message)
+  {
+    robot_io_->ingest_head_status(motor_samples(*message), now_sec());
+  }
+
+  void on_waist(const bodyctrl_msgs::msg::MotorStatusMsg::SharedPtr message)
+  {
+    robot_io_->ingest_waist_status(motor_samples(*message), now_sec());
   }
 
   void on_imu(const bodyctrl_msgs::msg::Imu::SharedPtr message)
@@ -282,8 +300,12 @@ private:
     const auto fresh = [now, this](double stamp) {
         return stamp > 0.0 && now - stamp <= state_timeout_sec_;
       };
-    const bool state_ready = state.leg_complete && state.arm_complete && state.fixed_arm_complete &&
-      fresh(state.leg_timestamp_sec) && fresh(state.arm_timestamp_sec) &&
+    const bool head_ready = config_.head_indices.empty() || state.head_complete;
+    const bool waist_ready = config_.waist_indices.empty() || state.waist_complete;
+    const bool state_ready = state.leg_complete && state.arm_complete && head_ready && waist_ready &&
+      state.fixed_arm_complete && fresh(state.leg_timestamp_sec) && fresh(state.arm_timestamp_sec) &&
+      (!config_.head_indices.empty() ? fresh(state.head_timestamp_sec) : true) &&
+      (!config_.waist_indices.empty() ? fresh(state.waist_timestamp_sec) : true) &&
       fresh(state.imu_timestamp_sec);
     const bool motion_ready = !require_motion_source_ ||
       (motion_timestamp_sec_ > 0.0 && now - motion_timestamp_sec_ <= motion_timeout_sec_);
@@ -345,6 +367,8 @@ private:
   rclcpp::Subscription<tienkung_interfaces::msg::MotionReference>::SharedPtr motion_subscription_;
   rclcpp::Subscription<bodyctrl_msgs::msg::MotorStatusMsg>::SharedPtr leg_subscription_;
   rclcpp::Subscription<bodyctrl_msgs::msg::MotorStatusMsg>::SharedPtr arm_subscription_;
+  rclcpp::Subscription<bodyctrl_msgs::msg::MotorStatusMsg>::SharedPtr head_subscription_;
+  rclcpp::Subscription<bodyctrl_msgs::msg::MotorStatusMsg>::SharedPtr waist_subscription_;
   rclcpp::Subscription<bodyctrl_msgs::msg::Imu>::SharedPtr imu_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_subscription_;
   rclcpp::Publisher<tienkung_interfaces::msg::ControlMode>::SharedPtr control_mode_publisher_;

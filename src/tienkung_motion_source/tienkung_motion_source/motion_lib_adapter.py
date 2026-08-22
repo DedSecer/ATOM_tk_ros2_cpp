@@ -87,7 +87,7 @@ class MotionFrame:
 
 
 class MotionLibAdapter:
-    def __init__(self, motion_file: str | Path) -> None:
+    def __init__(self, motion_file: str | Path, expected_dof: int | None = None) -> None:
         self.path = Path(motion_file)
         with self.path.open("rb") as file:
             motion_data = pickle.load(file)
@@ -95,6 +95,20 @@ class MotionLibAdapter:
         self.root_pos = np.asarray(motion_data["root_pos"], dtype=np.float32)
         self.root_rot = np.asarray(motion_data["root_rot"], dtype=np.float32)
         self.dof_pos = np.asarray(motion_data["dof_pos"], dtype=np.float32)
+        if self.root_pos.ndim != 2 or self.root_pos.shape[1] != 3:
+            raise ValueError(f"root_pos must have shape [frames, 3], got {self.root_pos.shape}")
+        if self.root_rot.ndim != 2 or self.root_rot.shape[1] != 4:
+            raise ValueError(f"root_rot must have shape [frames, 4], got {self.root_rot.shape}")
+        if self.dof_pos.ndim != 2:
+            raise ValueError(f"dof_pos must have shape [frames, dofs], got {self.dof_pos.shape}")
+        if not (self.root_pos.shape[0] == self.root_rot.shape[0] == self.dof_pos.shape[0]):
+            raise ValueError("Motion arrays must have the same frame count")
+        if not np.isfinite(self.root_pos).all() or not np.isfinite(self.root_rot).all() or not np.isfinite(self.dof_pos).all():
+            raise ValueError("Motion arrays must contain only finite values")
+        if expected_dof is not None and self.dof_pos.shape[1] != expected_dof:
+            raise ValueError(
+                f"dof_pos has {self.dof_pos.shape[1]} joints, expected {expected_dof}"
+            )
         self.num_frames = self.root_pos.shape[0]
         self.dt = 1.0 / self.fps
         self.length_sec = self.dt * max(0, self.num_frames - 1)

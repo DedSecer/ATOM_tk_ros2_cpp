@@ -36,6 +36,12 @@ class MotionSourceNode(Node):
 
         robot_config_path = str(self.get_parameter("robot_config_path").value)
         self.default_body = load_default_mimic_observation(robot_config_path)
+        if self.motion_lib is not None:
+            expected_dof = int(self.default_body.shape[0] - 6)
+            if self.motion_lib.dof_pos.shape[1] != expected_dof:
+                raise ValueError(
+                    f"Motion file has {self.motion_lib.dof_pos.shape[1]} DOFs, expected {expected_dof}"
+                )
         self.current_mode = ControlMode.STOP if self.start_paused else ControlMode.POLICY
         self.t_step = 0
         self._clip_ended_logged = False

@@ -1,0 +1,52 @@
+robot: walker
+num_actions: 30
+n_mimic_obs: 36
+n_proprio: 95
+n_obs_single: 131
+history_len: 10
+total_obs_size: 1477
+policy_frequency_hz: 50
+default_dof_pos: [
+  0.0, -0.5, 0.0, 1.0, -0.5, 0.0,
+  0.0, -0.5, 0.0, 1.0, -0.5, 0.0,
+  0.0, 0.0, 0.0, 0.0,
+  0.0, 0.1, 0.0, -0.3, 0.0, 0.0, 0.0,
+  0.0, -0.1, 0.0, -0.3, 0.0, 0.0, 0.0
+]
+action_scale: [
+  0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5
+]
+ankle_indices: [4, 5, 10, 11]
+joint_order_policy:
+  - hip_roll_l_joint
+  - hip_pitch_l_joint
+  - hip_yaw_l_joint
+  - knee_pitch_l_joint
+  - ankle_pitch_l_joint
+  - ankle_roll_l_joint
+  - hip_roll_r_joint
+  - hip_pitch_r_joint
+  - hip_yaw_r_joint
+  - knee_pitch_r_joint
+  - ankle_pitch_r_joint
+  - ankle_roll_r_joint
+  - waist_yaw_joint
+  - head_yaw_joint
+  - head_pitch_joint
+  - head_roll_joint
+  - shoulder_pitch_l_joint
+  - shoulder_roll_l_joint
+  - shoulder_yaw_l_joint
+  - elbow_pitch_l_joint
+  - elbow_yaw_l_joint
+  - wrist_pitch_l_joint
+  - wrist_roll_l_joint
+  - shoulder_pitch_r_joint
+  - shoulder_roll_r_joint
+  - shoulder_yaw_r_joint
+  - elbow_pitch_r_joint
+  - elbow_yaw_r_joint
+  - wrist_pitch_r_joint
+  - wrist_roll_r_joint

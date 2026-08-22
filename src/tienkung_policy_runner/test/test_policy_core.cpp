@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "tienkung_policy_runner/fsm.hpp"
@@ -15,6 +17,10 @@
 
 #ifndef TEST_ROBOT_CONFIG_PATH
 #error "TEST_ROBOT_CONFIG_PATH must be defined"
+#endif
+
+#ifndef TEST_WALKER_CONFIG_PATH
+#error "TEST_WALKER_CONFIG_PATH must be defined"
 #endif
 
 namespace tk = tienkung_policy_runner;
@@ -29,6 +35,20 @@ TEST(RobotConfig, LoadsUniformActionScaleAndPdGains)
   EXPECT_EQ(config.joint_kd.size(), config.motor_num);
   EXPECT_FLOAT_EQ(config.joint_kp[0], 700.0F);
   EXPECT_FLOAT_EQ(config.joint_kd[19], 1.0F);
+}
+
+TEST(RobotConfig, LoadsWalkerContractAndBlockedHead)
+{
+  const auto config = tk::load_robot_config(TEST_WALKER_CONFIG_PATH);
+  EXPECT_EQ(config.robot, "walker");
+  EXPECT_EQ(config.motor_num, 30U);
+  EXPECT_EQ(config.actions_size, 30U);
+  EXPECT_EQ(config.observation.n_mimic_obs, 36U);
+  EXPECT_EQ(config.observation.n_proprio, 95U);
+  EXPECT_EQ(config.observation.total_obs_size, 1477U);
+  EXPECT_EQ(config.head_indices, (std::vector<int>{13, 14, 15}));
+  EXPECT_EQ(config.blocked_action_indices, (std::vector<int>{13, 14, 15}));
+  EXPECT_TRUE(config.fixed_arm_command.ids.empty());
 }
 
 TEST(RobotConfig, RejectsNonPositiveActionContractValues)
@@ -109,6 +129,22 @@ TEST(ActionPostprocess, DerivesRawClipLimitFromTrainingContract)
   EXPECT_TRUE(clipped_target.isApprox((defaults.array() + config.clip_actions).matrix()));
 }
 
+TEST(ActionPostprocess, BlocksConfiguredHeadActions)
+{
+  auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
+  config.blocked_action_indices = {13, 14, 15};
+  const auto defaults = Eigen::Map<const Eigen::VectorXf>(
+    config.default_dof_pos.data(), config.default_dof_pos.size());
+  const auto raw = Eigen::VectorXf::Constant(config.actions_size, 2.0F);
+
+  const auto target = tk::postprocess_action(raw, config);
+  for (const int index : config.blocked_action_indices) {
+    EXPECT_FLOAT_EQ(target[index], defaults[index]);
+  }
+  EXPECT_FLOAT_EQ(target[12], defaults[12] + 1.0F);
+  EXPECT_FLOAT_EQ(target[16], defaults[16] + 1.0F);
+}
+
 TEST(PolicyFsm, RequiresCompletedZeroTransitionBeforePolicy)
 {
   tk::PolicyFsm fsm(2.0);
@@ -155,6 +191,37 @@ TEST(JointTransmission, LinearRoundTrip)
   const auto joint = transmission.motor_to_joint(motor);
   EXPECT_TRUE(joint.position.isApprox(Eigen::Vector2f(-0.5F, -0.1F)));
   EXPECT_TRUE(transmission.joint_to_motor(joint).position.isApprox(motor.position));
+}
+
+TEST(RobotIo, WalkerCommandGroupsExcludeBlockedHead)
+{
+  auto config = tk::load_robot_config(TEST_WALKER_CONFIG_PATH);
+  config.ankle_transmission.kind = "identity";
+  tk::RobotIo robot_io(config);
+  const auto target = Eigen::Map<const Eigen::VectorXf>(
+    config.default_dof_pos.data(), config.default_dof_pos.size());
+  const auto kp = Eigen::Map<const Eigen::VectorXf>(
+    config.joint_kp.data(), config.joint_kp.size());
+  const auto kd = Eigen::Map<const Eigen::VectorXf>(
+    config.joint_kd.data(), config.joint_kd.size());
+  const auto command = robot_io.build_command(target, kp, kd);
+
+  EXPECT_EQ(command.leg.size(), 12U);
+  EXPECT_EQ(command.arm.size(), 14U);
+  EXPECT_EQ(command.waist.size(), 1U);
+  EXPECT_TRUE(command.head.empty());
+  EXPECT_EQ(command.waist.front().can_id, 31);
+  EXPECT_FLOAT_EQ(command.waist.front().position, target[12]);
+  for (const auto & motor : command.leg) {
+    EXPECT_NE(motor.can_id, 1);
+    EXPECT_NE(motor.can_id, 2);
+    EXPECT_NE(motor.can_id, 3);
+  }
+  for (const auto & motor : command.arm) {
+    EXPECT_NE(motor.can_id, 1);
+    EXPECT_NE(motor.can_id, 2);
+    EXPECT_NE(motor.can_id, 3);
+  }
 }
 
 TEST(RobotIo, BuildsLegAndArmGroupsFromConfig)

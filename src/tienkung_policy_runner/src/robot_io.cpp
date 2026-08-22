@@ -112,6 +112,22 @@ void RobotIo::ingest_arm_status(
     fixed_arm_valid_mask_.begin(), fixed_arm_valid_mask_.end(), [](bool valid) {return valid;});
 }
 
+void RobotIo::ingest_head_status(
+  const std::vector<MotorSample> & samples, double stamp_sec)
+{
+  ingest_motor_status(samples);
+  state_.head_timestamp_sec = stamp_sec;
+  state_.head_complete = all_valid(config_.head_indices);
+}
+
+void RobotIo::ingest_waist_status(
+  const std::vector<MotorSample> & samples, double stamp_sec)
+{
+  ingest_motor_status(samples);
+  state_.waist_timestamp_sec = stamp_sec;
+  state_.waist_complete = all_valid(config_.waist_indices);
+}
+
 void RobotIo::ingest_imu(
   const Eigen::Vector3f & rpy,
   const Eigen::Vector3f & angular_velocity,
@@ -186,7 +202,24 @@ RobotCommand RobotIo::build_command(
   RobotCommand command;
   command.leg = build_group(config_.leg_indices);
   command.arm = build_group(config_.arm_indices);
+  command.head.clear();
   const bool position_control_enabled = kp.maxCoeff() > 0.0F;
+  if (config_.robot == "tienkung") {
+    for (const int can_id : config_.waist_command.ids) {
+      command.waist.push_back({
+        can_id, config_.waist_command.position, config_.waist_command.speed,
+        config_.waist_command.current});
+    }
+  } else {
+    for (std::size_t cursor = 0; cursor < config_.waist_indices.size(); ++cursor) {
+      const auto index = static_cast<Eigen::Index>(config_.waist_indices[cursor]);
+      command.waist.push_back({
+        config_.waist_command.ids[cursor],
+        calibrated.position[index],
+        config_.waist_command.speed,
+        config_.waist_command.current});
+    }
+  }
   for (std::size_t index = 0; index < config_.fixed_arm_command.ids.size(); ++index) {
     command.arm.push_back({
       config_.fixed_arm_command.ids[index],

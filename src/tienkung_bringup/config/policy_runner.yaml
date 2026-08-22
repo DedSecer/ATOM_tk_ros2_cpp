@@ -13,6 +13,8 @@
     control_mode_topic: /tienkung/control_mode
     leg_status_topic: /leg/status
     arm_status_topic: /arm/status
+    head_status_topic: /head/status
+    waist_status_topic: /waist/status
     imu_status_topic: /imu/status
     joy_topic: /sbus_data
     leg_command_topic: /leg/cmd_ctrl

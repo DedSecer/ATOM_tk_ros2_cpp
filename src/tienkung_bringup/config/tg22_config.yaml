@@ -62,9 +62,12 @@ arm_indices: [12, 13, 14, 15, 16, 17, 18, 19]
 fixed_arm_command:
   ids: [15, 16, 17, 25, 26, 27]
   position: 0.0
-  kp: 10.0
-  kd: 1.0
+  kp: 5.0
+  kd: 0.8
 waist_ids: [31]
+
+# Optional policy action indices to hold at default_dof_pos.
+blocked_action_indices: []
 
 default_dof_pos: [
   0.0, -0.5, 0.0, 1.0, -0.5, 0.0,
