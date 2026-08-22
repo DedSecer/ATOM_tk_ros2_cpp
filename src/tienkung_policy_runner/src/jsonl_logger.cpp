@@ -14,7 +14,7 @@ JsonlLogger::JsonlLogger(const std::string & directory, const std::string & pref
     (prefix + "_" + std::to_string(epoch) + ".jsonl")).string();
   stream_.open(path_);
   if (stream_) {
-    stream_ << std::setprecision(9);
+    stream_ << std::setprecision(17);
   }
 }
 
