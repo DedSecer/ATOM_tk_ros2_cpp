@@ -229,11 +229,6 @@ RobotCommand RobotIo::build_command(
       0.0F,
       0.0F});
   }
-  for (const int can_id : config_.waist_command.ids) {
-    command.waist.push_back({
-      can_id, config_.waist_command.position, config_.waist_command.speed,
-      config_.waist_command.current});
-  }
   return command;
 }
 
