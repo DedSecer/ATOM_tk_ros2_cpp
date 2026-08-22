@@ -31,8 +31,6 @@ def generate_launch_description() -> LaunchDescription:
                     "manifest_path": LaunchConfiguration("manifest_path"),
                     "robot_config_path": LaunchConfiguration("robot_config_path"),
                     "device": LaunchConfiguration("device"),
-                    "motion_reference_topic": "/walker/motion_reference",
-                    "control_mode_topic": "/walker/control_mode",
                     "head_status_topic": "/head/status",
                     "waist_status_topic": "/waist/status",
                     "enable_runtime_log": ParameterValue(
