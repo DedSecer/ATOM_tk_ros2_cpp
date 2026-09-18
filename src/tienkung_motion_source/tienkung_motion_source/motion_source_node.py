@@ -8,7 +8,12 @@ from rclpy.node import Node
 
 from tienkung_interfaces.msg import ControlMode, MotionReference
 
-from .motion_lib_adapter import MotionLibAdapter, build_mimic_obs, load_default_mimic_observation
+from .motion_lib_adapter import (
+    MotionLibAdapter,
+    build_mimic_obs,
+    interpolate_mimic_obs,
+    load_default_mimic_observation,
+)
 
 
 class MotionSourceNode(Node):
@@ -21,6 +26,7 @@ class MotionSourceNode(Node):
         self.declare_parameter("start_paused", True)
         self.declare_parameter("loop", True)
         self.declare_parameter("send_start_frame_as_end_frame", False)
+        self.declare_parameter("startup_interpolation_sec", 2.0)
         self.declare_parameter("future_steps", [1])
         self.declare_parameter("control_mode_topic", "/tienkung/control_mode")
         self.declare_parameter("motion_reference_topic", "/tienkung/motion_reference")
@@ -31,6 +37,9 @@ class MotionSourceNode(Node):
         self.loop = bool(self.get_parameter("loop").value)
         self.start_paused = bool(self.get_parameter("start_paused").value)
         self.send_start_frame_as_end_frame = bool(self.get_parameter("send_start_frame_as_end_frame").value)
+        self.startup_interpolation_sec = float(self.get_parameter("startup_interpolation_sec").value)
+        if self.startup_interpolation_sec < 0.0:
+            raise ValueError("startup_interpolation_sec must be non-negative")
         motion_file = str(self.get_parameter("motion_file").value)
         self.motion_lib: Optional[MotionLibAdapter] = MotionLibAdapter(motion_file) if motion_file else None
 
@@ -45,11 +54,17 @@ class MotionSourceNode(Node):
         self.current_mode = ControlMode.STOP if self.start_paused else ControlMode.POLICY
         self.t_step = 0
         self._clip_ended_logged = False
+        self.start_frame_body = self._compute_start_frame() if self.motion_lib is not None else self.default_body
+        self._last_published_body = np.array(self._idle_body(), dtype=np.float32, copy=True)
+        self._startup_interpolation_start_sec: Optional[float] = None
+        self._interpolation_start_body: Optional[np.ndarray] = None
+        if self.motion_lib is not None and self.current_mode == ControlMode.POLICY:
+            self._interpolation_start_body = np.array(
+                self._last_published_body, dtype=np.float32, copy=True)
+            self._startup_interpolation_start_sec = self.get_clock().now().nanoseconds / 1e9
         self.motion_reference_pub = self.create_publisher(MotionReference, str(self.get_parameter("motion_reference_topic").value), 10)
         self.create_subscription(ControlMode, str(self.get_parameter("control_mode_topic").value), self._control_mode_callback, 10)
         self.timer = self.create_timer(1.0 / self.publish_hz, self._publish_reference)
-
-        self.start_frame_body = self._compute_start_frame() if self.motion_lib is not None else self.default_body
 
         self.get_logger().info("MotionSourceNode initialized.")
         self.get_logger().info(f"Robot config: {robot_config_path}")
@@ -60,6 +75,8 @@ class MotionSourceNode(Node):
         self.get_logger().info(f"Loop: {self.loop}")
         self.get_logger().info(f"Current mode: {self.current_mode}")
         self.get_logger().info(f"Send start frame as end frame: {self.send_start_frame_as_end_frame}")
+        self.get_logger().info(
+            f"Startup interpolation sec: {self.startup_interpolation_sec}")
 
     def _compute_start_frame(self) -> np.ndarray:
         if self.motion_lib is None:
@@ -69,6 +86,15 @@ class MotionSourceNode(Node):
     def _control_mode_callback(self, msg: ControlMode) -> None:
         if self.current_mode != msg.mode:
             self.get_logger().info(f"Control mode changed from {self.current_mode} to {msg.mode}")
+            if msg.mode == ControlMode.POLICY:
+                self.t_step = 0
+                self._clip_ended_logged = False
+                self._interpolation_start_body = np.array(
+                    self._last_published_body, dtype=np.float32, copy=True)
+                self._startup_interpolation_start_sec = self.get_clock().now().nanoseconds / 1e9
+            else:
+                self._startup_interpolation_start_sec = None
+                self._interpolation_start_body = None
             self.current_mode = msg.mode
 
     def _idle_body(self) -> np.ndarray:
@@ -85,6 +111,18 @@ class MotionSourceNode(Node):
 
         if self.motion_lib is None or self.current_mode != ControlMode.POLICY:
             body = self._idle_body()
+        elif self._startup_interpolation_start_sec is not None:
+            target = self.start_frame_body
+            if self.startup_interpolation_sec == 0.0:
+                alpha = 1.0
+            else:
+                now_sec = self.get_clock().now().nanoseconds / 1e9
+                elapsed_sec = now_sec - self._startup_interpolation_start_sec
+                alpha = elapsed_sec / self.startup_interpolation_sec
+            body = interpolate_mimic_obs(self._interpolation_start_body, target, alpha)
+            if alpha >= 1.0:
+                self._startup_interpolation_start_sec = None
+                self._interpolation_start_body = None
         else:
             body = build_mimic_obs(self.motion_lib, self.t_step, self.control_dt, self.future_steps)
             self.t_step += 1
@@ -99,7 +137,8 @@ class MotionSourceNode(Node):
                         self._clip_ended_logged = True
                     self.t_step = max_steps - 1
 
-        msg.body_mimic = np.asarray(body, dtype=np.float32).tolist()
+        self._last_published_body = np.array(body, dtype=np.float32, copy=True)
+        msg.body_mimic = self._last_published_body.tolist()
         self.motion_reference_pub.publish(msg)
 
 

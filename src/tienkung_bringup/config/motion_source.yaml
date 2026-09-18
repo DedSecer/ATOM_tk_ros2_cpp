@@ -7,6 +7,7 @@ tienkung_motion_source:
     start_paused: true
     loop: true
     send_start_frame_as_end_frame: false
+    startup_interpolation_sec: 2.0
     future_steps: [1]
     control_mode_topic: /tienkung/control_mode
     motion_reference_topic: /tienkung/motion_reference

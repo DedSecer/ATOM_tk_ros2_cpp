@@ -31,6 +31,17 @@ def load_default_mimic_observation(robot_config_path: str | Path) -> np.ndarray:
     return mimic
 
 
+def interpolate_mimic_obs(
+    start: np.ndarray, target: np.ndarray, alpha: float
+) -> np.ndarray:
+    start = np.asarray(start, dtype=np.float32)
+    target = np.asarray(target, dtype=np.float32)
+    if start.shape != target.shape:
+        raise ValueError(f"Cannot interpolate shapes {start.shape} and {target.shape}")
+    blend = float(np.clip(alpha, 0.0, 1.0))
+    return ((1.0 - blend) * start + blend * target).astype(np.float32)
+
+
 def quat_to_euler_xyzw(quat: np.ndarray) -> np.ndarray:
     qx, qy, qz, qw = quat
     sinr_cosp = 2.0 * (qw * qx + qy * qz)
