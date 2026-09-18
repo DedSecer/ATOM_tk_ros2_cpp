@@ -151,22 +151,22 @@ private:
       parameter<std::string>("motion_reference_topic"), 10,
       std::bind(&Impl::on_motion, this, _1));
     leg_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::MotorStatusMsg>(
-      parameter<std::string>("leg_status_topic"), 100,
+      parameter<std::string>("leg_status_topic"), 10,
       std::bind(&Impl::on_leg, this, _1));
     arm_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::MotorStatusMsg>(
-      parameter<std::string>("arm_status_topic"), 100,
+      parameter<std::string>("arm_status_topic"), 10,
       std::bind(&Impl::on_arm, this, _1));
     head_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::MotorStatusMsg>(
-      parameter<std::string>("head_status_topic"), 100,
+      parameter<std::string>("head_status_topic"), 10,
       std::bind(&Impl::on_head, this, _1));
     waist_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::MotorStatusMsg>(
-      parameter<std::string>("waist_status_topic"), 100,
+      parameter<std::string>("waist_status_topic"), 10,
       std::bind(&Impl::on_waist, this, _1));
     imu_subscription_ = node_.create_subscription<bodyctrl_msgs::msg::Imu>(
-      parameter<std::string>("imu_status_topic"), 100,
+      parameter<std::string>("imu_status_topic"), 10,
       std::bind(&Impl::on_imu, this, _1));
     joy_subscription_ = node_.create_subscription<sensor_msgs::msg::Joy>(
-      parameter<std::string>("joy_topic"), 100,
+      parameter<std::string>("joy_topic"), 10,
       std::bind(&Impl::on_joy, this, _1));
 
     control_mode_publisher_ = node_.create_publisher<tienkung_interfaces::msg::ControlMode>(
