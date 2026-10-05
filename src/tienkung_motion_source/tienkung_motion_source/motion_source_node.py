@@ -90,7 +90,7 @@ class MotionSourceNode(Node):
                 self.t_step = 0
                 self._clip_ended_logged = False
                 self._interpolation_start_body = np.array(
-                    self._last_published_body, dtype=np.float32, copy=True)
+                    self.default_body, dtype=np.float32, copy=True)
                 self._startup_interpolation_start_sec = self.get_clock().now().nanoseconds / 1e9
             else:
                 self._startup_interpolation_start_sec = None
@@ -103,6 +103,9 @@ class MotionSourceNode(Node):
         return self.default_body
 
     def _publish_reference(self) -> None:
+        if self.current_mode != ControlMode.POLICY:
+            return
+
         msg = MotionReference()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.left_hand = []

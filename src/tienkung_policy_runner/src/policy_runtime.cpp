@@ -11,12 +11,14 @@ PolicyRuntime::PolicyRuntime(
   const std::string & policy_path,
   const std::string & device,
   double zero_duration_sec,
+  double motion_reference_interpolation_sec,
   bool infer_in_inactive_modes)
 : config_(config),
   observation_builder_(config),
   fsm_(zero_duration_sec),
   policy_(policy_path, device),
   zero_duration_sec_(std::max(1.0e-3, zero_duration_sec)),
+  motion_reference_interpolation_sec_(std::max(1.0e-3, motion_reference_interpolation_sec)),
   infer_in_inactive_modes_(infer_in_inactive_modes),
   last_action_(Eigen::VectorXf::Zero(config.actions_size)),
   zero_start_position_(Eigen::Map<const Eigen::VectorXf>(
@@ -32,7 +34,8 @@ RuntimeStep PolicyRuntime::step(
   const JoystickCommand & joystick,
   const Eigen::VectorXf & mimic,
   bool state_ready,
-  bool motion_ready)
+  bool motion_ready,
+  bool motion_reference_valid)
 {
   RuntimeStep result;
   result.mode = fsm_.update(now_sec, joystick, state_ready, motion_ready, true);
@@ -65,10 +68,19 @@ RuntimeStep PolicyRuntime::step(
       zero_start_fixed_arm_position_) * quintic_blend(alpha);
   }
 
+  Eigen::VectorXf effective_mimic = mimic;
+  if (result.mode == ControlMode::Policy) {
+    effective_mimic = interpolated_mimic(now_sec, mimic, motion_reference_valid);
+  } else {
+    motion_reference_start_time_sec_.reset();
+    motion_reference_start_.resize(0);
+    motion_reference_target_.resize(0);
+  }
+
   const bool run_inference = result.mode == ControlMode::Policy || infer_in_inactive_modes_;
   if (run_inference) {
     result.observation = observation_builder_.build_observation(
-      mimic, state.angular_velocity, state.rpy, state.dof_position, state.dof_velocity,
+      effective_mimic, state.angular_velocity, state.rpy, state.dof_position, state.dof_velocity,
       last_action_);
     const auto started = std::chrono::steady_clock::now();
     result.raw_action = policy_.infer(result.observation);
@@ -93,6 +105,26 @@ RuntimeStep PolicyRuntime::step(
 
   previous_mode_ = result.mode;
   return result;
+}
+
+Eigen::VectorXf PolicyRuntime::interpolated_mimic(
+  double now_sec, const Eigen::VectorXf & mimic, bool motion_reference_valid)
+{
+  const auto default_mimic = default_mimic_observation(config_);
+  const Eigen::VectorXf target = mimic.size() == default_mimic.size() ? mimic : default_mimic;
+  if (!motion_reference_start_time_sec_) {
+    motion_reference_start_time_sec_ = now_sec;
+    motion_reference_start_ = default_mimic;
+    motion_reference_target_ = motion_reference_valid ? target : default_mimic;
+  }
+  const double elapsed = now_sec - *motion_reference_start_time_sec_;
+  if (elapsed >= motion_reference_interpolation_sec_) {
+    return motion_reference_target_;
+  }
+  const float alpha = static_cast<float>(std::clamp(
+      elapsed / motion_reference_interpolation_sec_, 0.0, 1.0));
+  return motion_reference_start_ +
+    (motion_reference_target_ - motion_reference_start_) * alpha;
 }
 
 const Eigen::VectorXf & PolicyRuntime::last_action() const noexcept

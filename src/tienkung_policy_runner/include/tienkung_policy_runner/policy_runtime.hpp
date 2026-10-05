@@ -29,6 +29,7 @@ public:
     const std::string & policy_path,
     const std::string & device,
     double zero_duration_sec,
+    double motion_reference_interpolation_sec,
     bool infer_in_inactive_modes);
 
   RuntimeStep step(
@@ -37,22 +38,29 @@ public:
     const JoystickCommand & joystick,
     const Eigen::VectorXf & mimic,
     bool state_ready,
-    bool motion_ready);
+    bool motion_ready,
+    bool motion_reference_valid);
   const Eigen::VectorXf & last_action() const noexcept;
 
 private:
   static float quintic_blend(float alpha);
+  Eigen::VectorXf interpolated_mimic(
+    double now_sec, const Eigen::VectorXf & mimic, bool motion_reference_valid);
 
   const RobotConfig & config_;
   ObservationBuilder observation_builder_;
   PolicyFsm fsm_;
   OnnxPolicy policy_;
   double zero_duration_sec_{};
+  double motion_reference_interpolation_sec_{};
   bool infer_in_inactive_modes_{};
   Eigen::VectorXf last_action_;
   Eigen::VectorXf zero_start_position_;
   Eigen::VectorXf zero_start_fixed_arm_position_;
   std::optional<double> zero_start_time_sec_;
+  std::optional<double> motion_reference_start_time_sec_;
+  Eigen::VectorXf motion_reference_start_;
+  Eigen::VectorXf motion_reference_target_;
   ControlMode previous_mode_{ControlMode::Stop};
 };
 

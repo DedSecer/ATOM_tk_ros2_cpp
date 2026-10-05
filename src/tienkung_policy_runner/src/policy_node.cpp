@@ -72,7 +72,8 @@ public:
     robot_io_ = std::make_unique<RobotIo>(config_);
     runtime_ = std::make_unique<PolicyRuntime>(
       config_, parameter<std::string>("policy_path"), parameter<std::string>("device"),
-      parameter<double>("zero_duration_sec"), mode_ == PolicyNodeMode::DryRun);
+      parameter<double>("zero_duration_sec"), parameter<double>("motion_reference_interpolation_sec"),
+      mode_ == PolicyNodeMode::DryRun);
     latest_motion_ = default_mimic_observation(config_);
     kp_ = map_copy(config_.joint_kp);
     kd_ = map_copy(config_.joint_kd);
@@ -125,6 +126,7 @@ private:
     node_.declare_parameter("manifest_path", "");
     node_.declare_parameter("robot_config_path", "");
     node_.declare_parameter("zero_duration_sec", 2.0);
+    node_.declare_parameter("motion_reference_interpolation_sec", 2.0);
     node_.declare_parameter("state_timeout_sec", 0.1);
     node_.declare_parameter("motion_timeout_sec", 0.1);
     node_.declare_parameter("require_motion_source", false);
@@ -309,9 +311,18 @@ private:
       fresh(state.imu_timestamp_sec);
     const bool motion_ready = !require_motion_source_ ||
       (motion_timestamp_sec_ > 0.0 && now - motion_timestamp_sec_ <= motion_timeout_sec_);
+    const bool motion_reference_valid = motion_timestamp_sec_ > 0.0 &&
+      now - motion_timestamp_sec_ <= motion_timeout_sec_ &&
+      latest_motion_.size() == static_cast<Eigen::Index>(config_.observation.n_mimic_obs);
     const auto step = runtime_->step(
-      now, state, joystick, latest_motion_, state_ready, motion_ready);
+      now, state, joystick, latest_motion_, state_ready, motion_ready,
+      motion_reference_valid);
     publish_control_mode(step.mode);
+
+    if (step.mode == ControlMode::Stop) {
+      latest_motion_ = default_mimic_observation(config_);
+      motion_timestamp_sec_ = 0.0;
+    }
 
     const bool publish = mode_ == PolicyNodeMode::Production ||
       step.mode == ControlMode::Zero || step.mode == ControlMode::Stop;

@@ -7,6 +7,7 @@
     zero_duration_sec: 2.0
     state_timeout_sec: 0.1
     motion_timeout_sec: 0.1
+    motion_reference_interpolation_sec: 2.0
     require_motion_source: false
     report_interval_sec: 5.0
     motion_reference_topic: /tienkung/motion_reference
