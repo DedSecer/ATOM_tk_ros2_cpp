@@ -53,6 +53,7 @@ add_library(${PROJECT_NAME}_core SHARED
   src/fsm.cpp
   src/joint_transmission.cpp
   src/jsonl_logger.cpp
+  src/mimic_interpolator.cpp
   src/motor_calibration.cpp
   src/observation_builder.cpp
   src/onnx_policy.cpp

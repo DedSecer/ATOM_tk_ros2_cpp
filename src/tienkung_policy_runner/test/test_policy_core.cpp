@@ -10,6 +10,7 @@
 
 #include "tienkung_policy_runner/fsm.hpp"
 #include "tienkung_policy_runner/joint_transmission.hpp"
+#include "tienkung_policy_runner/mimic_interpolator.hpp"
 #include "tienkung_policy_runner/motor_calibration.hpp"
 #include "tienkung_policy_runner/observation_builder.hpp"
 #include "tienkung_policy_runner/robot_config.hpp"
@@ -155,6 +156,59 @@ TEST(PolicyFsm, RequiresCompletedZeroTransitionBeforePolicy)
   EXPECT_EQ(fsm.update(1.9, command, true, true, true), tk::ControlMode::Zero);
   EXPECT_EQ(fsm.update(2.0, command, true, true, true), tk::ControlMode::Policy);
   EXPECT_EQ(fsm.update(2.1, command, false, true, true), tk::ControlMode::Stop);
+}
+
+TEST(MimicInterpolator, FollowsLiveReferenceAfterInterpolationWindow)
+{
+  const auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
+  const auto default_mimic = tk::default_mimic_observation(config);
+  const auto reference = Eigen::VectorXf::Ones(config.observation.n_mimic_obs);
+  tk::MimicInterpolator interpolator(config, 2.0);
+
+  // 插值窗口内：从默认位姿向实时参考平滑过渡，且目标持续跟踪最新参考。
+  const auto early = interpolator.interpolate(0.0, reference, true);
+  EXPECT_TRUE(early.isApproxToConstant(0.0F, 1.0e-6F));
+  const auto mid = interpolator.interpolate(1.0, reference, true);
+  EXPECT_GT((mid - default_mimic).norm(), 0.0F);
+  EXPECT_LT((mid - reference).norm(), (reference - default_mimic).norm());
+
+  // 窗口结束后：输出必须等于最新参考，而不是冻结在进入时刻的值。
+  const auto reference_two = reference * 2.0F;
+  const auto after = interpolator.interpolate(2.0, reference_two, true);
+  EXPECT_TRUE(after.isApprox(reference_two, 1.0e-6F));
+  const auto reference_three = reference * 3.0F;
+  const auto later = interpolator.interpolate(2.02, reference_three, true);
+  EXPECT_TRUE(later.isApprox(reference_three, 1.0e-6F));
+}
+
+TEST(MimicInterpolator, FallsBackToDefaultWhenReferenceInvalid)
+{
+  const auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
+  const auto default_mimic = tk::default_mimic_observation(config);
+  const auto reference = Eigen::VectorXf::Ones(config.observation.n_mimic_obs);
+  tk::MimicInterpolator interpolator(config, 2.0);
+
+  interpolator.interpolate(0.0, reference, true);
+  const auto invalid = interpolator.interpolate(1.0, reference, false);
+  EXPECT_GT((invalid - default_mimic).norm(), 0.0F);
+
+  const auto after = interpolator.interpolate(2.0, reference, false);
+  EXPECT_TRUE(after.isApprox(default_mimic, 1.0e-6F));
+}
+
+TEST(MimicInterpolator, ResetRestartsInterpolationFromDefault)
+{
+  const auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
+  const auto default_mimic = tk::default_mimic_observation(config);
+  const auto reference = Eigen::VectorXf::Ones(config.observation.n_mimic_obs);
+  tk::MimicInterpolator interpolator(config, 2.0);
+
+  interpolator.interpolate(0.0, reference, true);
+  interpolator.interpolate(3.0, reference, true);
+  interpolator.reset();
+
+  const auto restarted = interpolator.interpolate(10.0, reference, true);
+  EXPECT_TRUE(restarted.isApproxToConstant(0.0F, 1.0e-6F));
 }
 
 TEST(MotorCalibration, FeedbackCommandRoundTrip)

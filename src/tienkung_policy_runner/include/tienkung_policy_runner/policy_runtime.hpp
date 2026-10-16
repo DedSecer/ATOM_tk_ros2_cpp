@@ -5,6 +5,7 @@
 #include <Eigen/Core>
 
 #include "tienkung_policy_runner/fsm.hpp"
+#include "tienkung_policy_runner/mimic_interpolator.hpp"
 #include "tienkung_policy_runner/observation_builder.hpp"
 #include "tienkung_policy_runner/onnx_policy.hpp"
 #include "tienkung_policy_runner/robot_config.hpp"
@@ -44,23 +45,18 @@ public:
 
 private:
   static float quintic_blend(float alpha);
-  Eigen::VectorXf interpolated_mimic(
-    double now_sec, const Eigen::VectorXf & mimic, bool motion_reference_valid);
 
   const RobotConfig & config_;
   ObservationBuilder observation_builder_;
   PolicyFsm fsm_;
   OnnxPolicy policy_;
   double zero_duration_sec_{};
-  double motion_reference_interpolation_sec_{};
+  MimicInterpolator mimic_interpolator_;
   bool infer_in_inactive_modes_{};
   Eigen::VectorXf last_action_;
   Eigen::VectorXf zero_start_position_;
   Eigen::VectorXf zero_start_fixed_arm_position_;
   std::optional<double> zero_start_time_sec_;
-  std::optional<double> motion_reference_start_time_sec_;
-  Eigen::VectorXf motion_reference_start_;
-  Eigen::VectorXf motion_reference_target_;
   ControlMode previous_mode_{ControlMode::Stop};
 };
 

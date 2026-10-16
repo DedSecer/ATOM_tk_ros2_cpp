@@ -18,7 +18,7 @@ PolicyRuntime::PolicyRuntime(
   fsm_(zero_duration_sec),
   policy_(policy_path, device),
   zero_duration_sec_(std::max(1.0e-3, zero_duration_sec)),
-  motion_reference_interpolation_sec_(std::max(1.0e-3, motion_reference_interpolation_sec)),
+  mimic_interpolator_(config, motion_reference_interpolation_sec),
   infer_in_inactive_modes_(infer_in_inactive_modes),
   last_action_(Eigen::VectorXf::Zero(config.actions_size)),
   zero_start_position_(Eigen::Map<const Eigen::VectorXf>(
@@ -70,11 +70,10 @@ RuntimeStep PolicyRuntime::step(
 
   Eigen::VectorXf effective_mimic = mimic;
   if (result.mode == ControlMode::Policy) {
-    effective_mimic = interpolated_mimic(now_sec, mimic, motion_reference_valid);
+    effective_mimic = mimic_interpolator_.interpolate(
+      now_sec, mimic, motion_reference_valid);
   } else {
-    motion_reference_start_time_sec_.reset();
-    motion_reference_start_.resize(0);
-    motion_reference_target_.resize(0);
+    mimic_interpolator_.reset();
   }
 
   const bool run_inference = result.mode == ControlMode::Policy || infer_in_inactive_modes_;
@@ -105,26 +104,6 @@ RuntimeStep PolicyRuntime::step(
 
   previous_mode_ = result.mode;
   return result;
-}
-
-Eigen::VectorXf PolicyRuntime::interpolated_mimic(
-  double now_sec, const Eigen::VectorXf & mimic, bool motion_reference_valid)
-{
-  const auto default_mimic = default_mimic_observation(config_);
-  const Eigen::VectorXf target = mimic.size() == default_mimic.size() ? mimic : default_mimic;
-  if (!motion_reference_start_time_sec_) {
-    motion_reference_start_time_sec_ = now_sec;
-    motion_reference_start_ = default_mimic;
-    motion_reference_target_ = motion_reference_valid ? target : default_mimic;
-  }
-  const double elapsed = now_sec - *motion_reference_start_time_sec_;
-  if (elapsed >= motion_reference_interpolation_sec_) {
-    return motion_reference_target_;
-  }
-  const float alpha = static_cast<float>(std::clamp(
-      elapsed / motion_reference_interpolation_sec_, 0.0, 1.0));
-  return motion_reference_start_ +
-    (motion_reference_target_ - motion_reference_start_) * alpha;
 }
 
 const Eigen::VectorXf & PolicyRuntime::last_action() const noexcept
