@@ -181,7 +181,7 @@ TEST(MimicInterpolator, FollowsLiveReferenceAfterInterpolationWindow)
   EXPECT_TRUE(later.isApprox(reference_three, 1.0e-6F));
 }
 
-TEST(MimicInterpolator, FallsBackToDefaultWhenReferenceInvalid)
+TEST(MimicInterpolator, HoldsLastValidFrameWhileReferenceStale)
 {
   const auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
   const auto default_mimic = tk::default_mimic_observation(config);
@@ -189,10 +189,43 @@ TEST(MimicInterpolator, FallsBackToDefaultWhenReferenceInvalid)
   tk::MimicInterpolator interpolator(config, 2.0);
 
   interpolator.interpolate(0.0, reference, true);
-  const auto invalid = interpolator.interpolate(1.0, reference, false);
-  EXPECT_GT((invalid - default_mimic).norm(), 0.0F);
+  interpolator.interpolate(3.0, reference, true);
 
-  const auto after = interpolator.interpolate(2.0, reference, false);
+  // 数据流断开后：保持最后一帧有效 mimic，观测不得跳回默认值。
+  const auto stale = interpolator.interpolate(3.02, reference, false);
+  EXPECT_TRUE(stale.isApprox(reference, 1.0e-6F));
+  const auto still_stale = interpolator.interpolate(10.0, reference, false);
+  EXPECT_TRUE(still_stale.isApprox(reference, 1.0e-6F));
+  EXPECT_FALSE(still_stale.isApprox(default_mimic, 1.0e-6F));
+}
+
+TEST(MimicInterpolator, ResumesFollowingAfterStreamRecovery)
+{
+  const auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
+  const auto reference = Eigen::VectorXf::Ones(config.observation.n_mimic_obs);
+  const auto recovered = reference * 2.0F;
+  tk::MimicInterpolator interpolator(config, 2.0);
+
+  interpolator.interpolate(0.0, reference, true);
+  interpolator.interpolate(3.0, reference, true);
+  interpolator.interpolate(3.02, reference, false);
+
+  // 数据流恢复后：重新跟随最新参考。
+  const auto resumed = interpolator.interpolate(3.04, recovered, true);
+  EXPECT_TRUE(resumed.isApprox(recovered, 1.0e-6F));
+}
+
+TEST(MimicInterpolator, UsesDefaultBeforeAnyValidFrame)
+{
+  const auto config = tk::load_robot_config(TEST_ROBOT_CONFIG_PATH);
+  const auto default_mimic = tk::default_mimic_observation(config);
+  const auto reference = Eigen::VectorXf::Ones(config.observation.n_mimic_obs);
+  tk::MimicInterpolator interpolator(config, 2.0);
+
+  // 从未收到有效帧时：目标为默认 mimic，窗口结束后停在默认值。
+  const auto first = interpolator.interpolate(0.0, reference, false);
+  EXPECT_TRUE(first.isApproxToConstant(0.0F, 1.0e-6F));
+  const auto after = interpolator.interpolate(3.0, reference, false);
   EXPECT_TRUE(after.isApprox(default_mimic, 1.0e-6F));
 }
 

@@ -9,7 +9,8 @@ namespace tienkung_policy_runner {
 MimicInterpolator::MimicInterpolator(const RobotConfig & config, double interpolation_sec)
 : config_(config),
   interpolation_sec_(std::max(1.0e-3, interpolation_sec)),
-  start_(default_mimic_observation(config))
+  start_(default_mimic_observation(config)),
+  last_valid_(default_mimic_observation(config))
 {
 }
 
@@ -21,7 +22,13 @@ Eigen::VectorXf MimicInterpolator::interpolate(
     start_time_sec_ = now_sec;
     start_ = default_mimic;
   }
-  const Eigen::VectorXf target = motion_reference_valid ? mimic : default_mimic;
+  if (motion_reference_valid) {
+    last_valid_ = mimic;
+    has_last_valid_ = true;
+  }
+  // Hold the last valid frame while the stream is stale; fall back to the
+  // default observation only before any valid frame has been received.
+  const Eigen::VectorXf & target = has_last_valid_ ? last_valid_ : default_mimic;
   const double elapsed = now_sec - *start_time_sec_;
   if (elapsed >= interpolation_sec_) {
     start_ = target;
@@ -37,6 +44,8 @@ void MimicInterpolator::reset()
 {
   start_time_sec_.reset();
   start_.resize(0);
+  last_valid_ = default_mimic_observation(config_);
+  has_last_valid_ = false;
 }
 
 }  // namespace tienkung_policy_runner
