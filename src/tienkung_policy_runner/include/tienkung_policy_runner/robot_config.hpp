@@ -15,6 +15,7 @@ struct ObservationConfig {
   std::size_t total_obs_size{};
   float angular_velocity_scale{};
   float joint_velocity_scale{};
+  bool append_mimic{true};
 };
 
 struct AnkleTransmissionConfig {

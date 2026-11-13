@@ -13,6 +13,7 @@ from .motion_lib_adapter import (
     build_mimic_obs,
     interpolate_mimic_obs,
     load_default_mimic_observation,
+    load_motion_reference_steps,
 )
 
 
@@ -27,13 +28,17 @@ class MotionSourceNode(Node):
         self.declare_parameter("loop", True)
         self.declare_parameter("send_start_frame_as_end_frame", False)
         self.declare_parameter("startup_interpolation_sec", 2.0)
-        self.declare_parameter("future_steps", [1])
+        robot_config_path = str(self.get_parameter("robot_config_path").value)
+        reference_steps = load_motion_reference_steps(robot_config_path)
+        self.declare_parameter("future_steps", reference_steps)
         self.declare_parameter("control_mode_topic", "/tienkung/control_mode")
         self.declare_parameter("motion_reference_topic", "/tienkung/motion_reference")
 
         self.control_dt = float(self.get_parameter("control_dt").value)
         self.publish_hz = float(self.get_parameter("publish_hz").value)
         self.future_steps = [int(step) for step in self.get_parameter("future_steps").value]
+        if self.future_steps != reference_steps:
+            raise ValueError("future_steps must match the robot's motion_reference_steps")
         self.loop = bool(self.get_parameter("loop").value)
         self.start_paused = bool(self.get_parameter("start_paused").value)
         self.send_start_frame_as_end_frame = bool(self.get_parameter("send_start_frame_as_end_frame").value)
@@ -43,7 +48,6 @@ class MotionSourceNode(Node):
         motion_file = str(self.get_parameter("motion_file").value)
         self.motion_lib: Optional[MotionLibAdapter] = MotionLibAdapter(motion_file) if motion_file else None
 
-        robot_config_path = str(self.get_parameter("robot_config_path").value)
         self.default_body = load_default_mimic_observation(robot_config_path)
         if self.motion_lib is not None:
             expected_dof = int(self.default_body.shape[0] - 6)
@@ -81,7 +85,7 @@ class MotionSourceNode(Node):
     def _compute_start_frame(self) -> np.ndarray:
         if self.motion_lib is None:
             return self.default_body
-        return build_mimic_obs(self.motion_lib, 0, self.control_dt, self.future_steps)
+        return build_mimic_obs(self.motion_lib, 0, self.control_dt, self.future_steps, loop=self.loop)
 
     def _control_mode_callback(self, msg: ControlMode) -> None:
         if self.current_mode != msg.mode:
@@ -127,18 +131,20 @@ class MotionSourceNode(Node):
                 self._startup_interpolation_start_sec = None
                 self._interpolation_start_body = None
         else:
-            body = build_mimic_obs(self.motion_lib, self.t_step, self.control_dt, self.future_steps)
-            self.t_step += 1
-            max_steps = max(1, int(self.motion_lib.get_motion_length() / self.control_dt))
-            if self.t_step >= max_steps:
-                if self.loop:
+            body = build_mimic_obs(
+                self.motion_lib, self.t_step, self.control_dt, self.future_steps, loop=self.loop)
+            motion_length = self.motion_lib.get_motion_length()
+            at_end = (self.t_step + self.future_steps[0]) * self.control_dt >= motion_length
+            if not self.loop and at_end:
+                if not self._clip_ended_logged:
+                    self.get_logger().info("Motion clip ended. Holding at final frame.")
+                    self._clip_ended_logged = True
+            else:
+                self.t_step += 1
+                max_steps = max(1, int(motion_length / self.control_dt))
+                if self.loop and self.t_step >= max_steps:
                     self.get_logger().info(f"Motion clip ended (max_steps={max_steps}). Looping back to start.")
                     self.t_step = 0
-                else:
-                    if not self._clip_ended_logged:
-                        self.get_logger().info(f"Motion clip ended (max_steps={max_steps}). Holding at final frame.")
-                        self._clip_ended_logged = True
-                    self.t_step = max_steps - 1
 
         self._last_published_body = np.array(body, dtype=np.float32, copy=True)
         msg.body_mimic = self._last_published_body.tolist()

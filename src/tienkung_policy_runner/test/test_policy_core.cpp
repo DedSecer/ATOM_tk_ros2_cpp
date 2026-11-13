@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -46,7 +47,8 @@ TEST(RobotConfig, LoadsWalkerContractAndBlockedHead)
   EXPECT_EQ(config.actions_size, 30U);
   EXPECT_EQ(config.observation.n_mimic_obs, 36U);
   EXPECT_EQ(config.observation.n_proprio, 95U);
-  EXPECT_EQ(config.observation.total_obs_size, 1477U);
+  EXPECT_EQ(config.observation.total_obs_size, 1441U);
+  EXPECT_FALSE(config.observation.append_mimic);
   EXPECT_EQ(config.head_indices, (std::vector<int>{13, 14, 15}));
   EXPECT_FALSE(config.require_head_status);
   EXPECT_EQ(config.blocked_action_indices, (std::vector<int>{13, 14, 15}));
@@ -101,6 +103,9 @@ TEST(ObservationBuilder, MatchesHistoryAndUniformActionContract)
   const auto observation = builder.build_observation(
     mimic, angular_velocity, rpy, dof_position, dof_velocity, last_action);
   ASSERT_EQ(observation.size(), static_cast<Eigen::Index>(config.observation.total_obs_size));
+  EXPECT_TRUE(config.observation.append_mimic);
+  EXPECT_EQ(observation.size(), 1027);
+  EXPECT_TRUE(observation.tail(mimic.size()).isApprox(mimic));
   Eigen::VectorXf current(config.observation.n_obs_single);
   current << mimic, proprio;
   for (std::size_t frame = 0; frame < config.observation.history_len; ++frame) {
@@ -112,6 +117,71 @@ TEST(ObservationBuilder, MatchesHistoryAndUniformActionContract)
   const auto raw = Eigen::VectorXf::Constant(config.actions_size, 20.0F);
   const auto target = tk::postprocess_action(raw, config);
   EXPECT_TRUE(target.isApprox((dof_position.array() + 5.0F).matrix()));
+}
+
+TEST(ObservationBuilder, WalkerCurrentAndHistoryWithoutTrailingMimic)
+{
+  const auto config = tk::load_robot_config(TEST_WALKER_CONFIG_PATH);
+  tk::ObservationBuilder builder(config);
+  const Eigen::VectorXf mimic = Eigen::VectorXf::LinSpaced(36, 1.0F, 36.0F);
+  const Eigen::VectorXf defaults = Eigen::Map<const Eigen::VectorXf>(
+    config.default_dof_pos.data(), config.default_dof_pos.size());
+  const Eigen::VectorXf velocity = Eigen::VectorXf::LinSpaced(30, 1.0F, 30.0F);
+  const Eigen::VectorXf action = Eigen::VectorXf::LinSpaced(30, -20.0F, 20.0F);
+  const Eigen::Vector3f angular_velocity(1.0F, 2.0F, 3.0F);
+  const Eigen::Vector3f rpy(0.1F, -0.2F, 0.3F);
+  Eigen::VectorXf frame(131);
+  frame << mimic, angular_velocity * 0.25F, rpy.head<2>(),
+    Eigen::VectorXf::Constant(30, 0.2F), velocity * 0.05F, action;
+
+  const auto first = builder.build_observation(
+    mimic, angular_velocity, rpy, defaults.array() + 0.2F, velocity, action);
+  ASSERT_EQ(first.size(), 1441);
+  for (int index = 0; index < 11; ++index) {
+    EXPECT_TRUE(first.segment(index * 131, 131).isApprox(frame));
+  }
+
+  // History is oldest-to-newest and must not include this call's current frame.
+  Eigen::VectorXf previous = frame;
+  for (int step = 1; step <= 12; ++step) {
+    const Eigen::VectorXf current_mimic = mimic.array() + static_cast<float>(step);
+    const auto observation = builder.build_observation(
+      current_mimic, angular_velocity, rpy, defaults.array() + 0.2F, velocity, action);
+    EXPECT_TRUE(observation.head(36).isApprox(current_mimic));
+    EXPECT_TRUE(observation.tail(131).isApprox(previous));
+    const float oldest_step = static_cast<float>(std::max(0, step - 10));
+    EXPECT_TRUE(observation.segment(131, 36).isApprox(
+      (mimic.array() + oldest_step).matrix()));
+    previous = observation.head(131);
+  }
+  builder.reset();
+  EXPECT_TRUE(builder.build_observation(
+    mimic, angular_velocity, rpy, defaults.array() + 0.2F, velocity, action).isApprox(first));
+}
+
+TEST(RobotConfig, WalkerRejectsLegacyDimensionsAndManifest)
+{
+  const auto config_path = std::filesystem::path(TEST_WALKER_CONFIG_PATH);
+  const auto config = tk::load_robot_config(config_path.string());
+  const auto manifest_path = config_path.parent_path() / "walker_policy_manifest.example.yaml";
+  EXPECT_NO_THROW(tk::validate_manifest(manifest_path.string(), config));
+
+  for (const auto & source_path : {config_path, manifest_path}) {
+    std::ifstream source(source_path);
+    ASSERT_TRUE(source);
+    std::string content((std::istreambuf_iterator<char>(source)), {});
+    const auto offset = content.find("total_obs_size: 1441");
+    ASSERT_NE(offset, std::string::npos);
+    content.replace(offset, std::string("total_obs_size: 1441").size(), "total_obs_size: 1477");
+    const auto path = std::filesystem::temp_directory_path() / "legacy_walker_contract.yaml";
+    std::ofstream(path) << content;
+    if (source_path == config_path) {
+      EXPECT_THROW(tk::load_robot_config(path.string()), std::runtime_error);
+    } else {
+      EXPECT_THROW(tk::validate_manifest(path.string(), config), std::runtime_error);
+    }
+    std::filesystem::remove(path);
+  }
 }
 
 TEST(ActionPostprocess, DerivesRawClipLimitFromTrainingContract)

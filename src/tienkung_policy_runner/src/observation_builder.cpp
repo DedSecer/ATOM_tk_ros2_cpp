@@ -86,7 +86,9 @@ Eigen::VectorXf ObservationBuilder::build_observation(
     result.segment(cursor, frame.size()) = frame;
     cursor += frame.size();
   }
-  result.segment(cursor, mimic.size()) = mimic;
+  if (config_.observation.append_mimic) {
+    result.segment(cursor, mimic.size()) = mimic;
+  }
 
   history_.pop_front();
   history_.push_back(current);

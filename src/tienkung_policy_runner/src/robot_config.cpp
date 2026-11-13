@@ -94,6 +94,8 @@ RobotConfig load_robot_config(const std::string & path)
     required<std::size_t>(observation, "total_obs_size"),
     required<float>(observation, "angular_velocity_scale"),
     required<float>(observation, "joint_velocity_scale")};
+  config.observation.append_mimic = observation["append_mimic"] ?
+    observation["append_mimic"].as<bool>() : true;
 
   config.joint_order_policy =
     required_vector<std::string>(root, "joint_order_policy", config.motor_num);
@@ -185,8 +187,9 @@ RobotConfig load_robot_config(const std::string & path)
   const std::size_t expected_proprio = 3 + 2 + 3 * config.motor_num;
   const std::size_t expected_single = config.observation.n_mimic_obs + expected_proprio;
   const std::size_t expected_total = expected_single * (config.observation.history_len + 1) +
-    config.observation.n_mimic_obs;
-  if (config.observation.n_proprio != expected_proprio ||
+    (config.observation.append_mimic ? config.observation.n_mimic_obs : 0);
+  if (config.observation.history_len == 0 ||
+    config.observation.n_proprio != expected_proprio ||
     config.observation.n_obs_single != expected_single ||
     config.observation.total_obs_size != expected_total)
   {

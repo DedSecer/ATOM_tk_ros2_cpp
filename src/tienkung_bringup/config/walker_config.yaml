@@ -2,13 +2,15 @@ robot: walker
 motor_num: 30
 actions_size: 30
 policy_frequency_hz: 50
+motion_reference_steps: [0]  # rm_future uses the current reference, not t + 20 ms
 
 observation:
   n_mimic_obs: 36
   n_proprio: 95
   n_obs_single: 131
   history_len: 10
-  total_obs_size: 1477
+  total_obs_size: 1441
+  append_mimic: false  # rm_future: current frame + history, no trailing mimic
   angular_velocity_scale: 0.25
   joint_velocity_scale: 0.05
 

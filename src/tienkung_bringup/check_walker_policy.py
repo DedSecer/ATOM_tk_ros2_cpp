@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 
 
-EXPECTED_INPUT = 1477
+EXPECTED_INPUT = 1441  # rm_future student: 131 current + 10 * 131 history
 EXPECTED_OUTPUT = 30
 
 

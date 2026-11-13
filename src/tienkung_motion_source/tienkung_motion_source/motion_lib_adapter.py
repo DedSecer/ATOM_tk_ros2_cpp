@@ -31,6 +31,16 @@ def load_default_mimic_observation(robot_config_path: str | Path) -> np.ndarray:
     return mimic
 
 
+def load_motion_reference_steps(robot_config_path: str | Path) -> list[int]:
+    with Path(robot_config_path).open("r", encoding="utf-8") as file:
+        config = yaml.safe_load(file) or {}
+    # Legacy Tienkung samples t + dt; rm_future Walker explicitly samples t.
+    steps = config.get("motion_reference_steps", [1])
+    if not isinstance(steps, list) or len(steps) != 1 or type(steps[0]) is not int:
+        raise ValueError("motion_reference_steps must contain exactly one integer")
+    return steps
+
+
 def interpolate_mimic_obs(
     start: np.ndarray, target: np.ndarray, alpha: float
 ) -> np.ndarray:
@@ -148,18 +158,18 @@ class MotionLibAdapter:
     def get_motion_length(self) -> float:
         return self.length_sec
 
-    def _blend_indices(self, t_sec: float) -> tuple[int, int, float]:
+    def _blend_indices(self, t_sec: float, loop: bool = True) -> tuple[int, int, float]:
         if self.length_sec <= 0.0:
             return 0, 0, 0.0
-        t = t_sec % self.length_sec
+        t = t_sec % self.length_sec if loop else np.clip(t_sec, 0.0, self.length_sec)
         phase = np.clip(t / self.length_sec, 0.0, 1.0)
         idx0 = int(phase * (self.num_frames - 1))
         idx1 = min(idx0 + 1, self.num_frames - 1)
         blend = phase * (self.num_frames - 1) - idx0
         return idx0, idx1, float(blend)
 
-    def sample_frame(self, t_sec: float) -> MotionFrame:
-        idx0, idx1, blend = self._blend_indices(t_sec)
+    def sample_frame(self, t_sec: float, loop: bool = True) -> MotionFrame:
+        idx0, idx1, blend = self._blend_indices(t_sec, loop=loop)
         root_pos = (1.0 - blend) * self.root_pos[idx0] + blend * self.root_pos[idx1]
         root_rot = (1.0 - blend) * self.root_rot[idx0] + blend * self.root_rot[idx1]
         root_rot = root_rot / np.linalg.norm(root_rot)
@@ -169,12 +179,12 @@ class MotionLibAdapter:
         return MotionFrame(root_pos=root_pos, root_rot=root_rot, root_vel=root_vel, root_ang_vel=root_ang_vel, dof_pos=dof_pos)
 
 
-def build_mimic_obs(adapter: MotionLibAdapter, t_step: int, control_dt: float, future_steps: Sequence[int]) -> np.ndarray:
+def build_mimic_obs(adapter: MotionLibAdapter, t_step: int, control_dt: float, future_steps: Sequence[int], loop: bool = True) -> np.ndarray:
     future_steps = list(future_steps)
     rows = []
     for step in future_steps:
         t_sec = (t_step + int(step)) * control_dt
-        frame = adapter.sample_frame(t_sec)
+        frame = adapter.sample_frame(t_sec, loop=loop)
         euler = quat_to_euler_xyzw(frame.root_rot)
         root_vel_local = quat_rotate_inverse_xyzw(frame.root_rot, frame.root_vel)
         root_ang_vel_local = quat_rotate_inverse_xyzw(frame.root_rot, frame.root_ang_vel)
