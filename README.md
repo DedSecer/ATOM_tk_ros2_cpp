@@ -8,6 +8,7 @@ Tienkung 强化学习策略的 ROS 2 Humble 部署工作区。策略运行、dry
 - `tienkung_policy_runner`：C++ 策略核心、正式节点、dry-run 节点和输入监控节点。
 - `tienkung_motion_source`：Python 动作片段采样节点。
 - `tienkung_bringup`：统一配置和 launch 文件。
+- `tienkung_runtime_monitor`：独立只读 Web 服务，实时显示 runtime log、三组 URDF 姿态和诊断曲线。部署与 URDF 参数见 `src/tienkung_runtime_monitor/README.md`。
 
 ## 统一机器人配置
 
@@ -81,7 +82,7 @@ ros2 launch tienkung_bringup dry_run.launch.py \
 
 安全语义：
 
-- `STOP`：不发布电机命令。
+- `STOP`：当前实现仍发布电机命令，腿/臂策略关节 `kp=0`、保留 `kd`，腰部也发布命令；并非硬件无输出状态。
 - `ZERO`：发布真实 PD 归零命令，会驱动机器人。
 - `POLICY`：执行 ONNX 推理，但不发布策略电机命令。
 

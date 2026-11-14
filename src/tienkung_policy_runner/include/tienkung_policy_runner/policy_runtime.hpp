@@ -19,6 +19,7 @@ struct RuntimeStep {
   Eigen::VectorXf fixed_arm_target_position;
   Eigen::VectorXf observation;
   Eigen::VectorXf raw_action;
+  Eigen::VectorXf effective_mimic;
   bool inference_executed{false};
   double inference_latency_ms{};
 };

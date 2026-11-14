@@ -84,7 +84,29 @@ public:
     if (parameter<bool>("enable_runtime_log")) {
       logger_ = std::make_unique<JsonlLogger>(
         parameter<std::string>("log_dir"),
-        mode_ == PolicyNodeMode::DryRun ? "dry_run_log" : "policy_log");
+        mode_ == PolicyNodeMode::DryRun ? "dry_run_log" : "policy_log",
+        static_cast<std::size_t>(std::max<int64_t>(
+          0, parameter<int64_t>("runtime_log_queue_capacity"))));
+      TelemetryMetadata metadata;
+      metadata.config = config_;
+      metadata.policy_path = parameter<std::string>("policy_path");
+      metadata.robot_config_path = parameter<std::string>("robot_config_path");
+      metadata.manifest_path = parameter<std::string>("manifest_path");
+      metadata.device = parameter<std::string>("device");
+      metadata.dry_run = mode_ == PolicyNodeMode::DryRun;
+      metadata.require_motion_source = require_motion_source_;
+      metadata.zero_duration_sec = parameter<double>("zero_duration_sec");
+      metadata.motion_reference_interpolation_sec =
+        parameter<double>("motion_reference_interpolation_sec");
+      metadata.state_timeout_sec = state_timeout_sec_;
+      metadata.motion_timeout_sec = motion_timeout_sec_;
+      for (const auto * name : {"motion_reference_topic", "control_mode_topic", "leg_status_topic",
+        "arm_status_topic", "head_status_topic", "waist_status_topic", "imu_status_topic",
+        "joy_topic", "leg_command_topic", "arm_command_topic", "waist_command_topic"})
+      {
+        metadata.topics[name] = parameter<std::string>(name);
+      }
+      logger_->write_metadata(std::move(metadata));
     }
     create_ros_entities();
 
@@ -144,6 +166,7 @@ private:
     node_.declare_parameter("waist_command_topic", "/waist/cmd_pos");
     node_.declare_parameter("enable_runtime_log", false);
     node_.declare_parameter("log_dir", "/tmp");
+    node_.declare_parameter("runtime_log_queue_capacity", 256);
   }
 
   void create_ros_entities()
@@ -238,6 +261,7 @@ private:
 
   void on_joy(const sensor_msgs::msg::Joy::SharedPtr message)
   {
+    joy_timestamp_sec_ = now_sec();
     std::vector<int> buttons(message->buttons.begin(), message->buttons.end());
     robot_io_->ingest_joystick(decode_joy_message(message->axes, buttons));
   }
@@ -250,7 +274,7 @@ private:
     control_mode_publisher_->publish(message);
   }
 
-  void publish_robot_command(const RobotCommand & command)
+  void publish_robot_command(const RobotCommand & command, PublishedCommand * telemetry)
   {
     bodyctrl_msgs::msg::CmdMotorCtrl leg_message;
     bodyctrl_msgs::msg::CmdMotorCtrl arm_message;
@@ -287,15 +311,38 @@ private:
     leg_command_publisher_->publish(leg_message);
     arm_command_publisher_->publish(arm_message);
     waist_command_publisher_->publish(waist_message);
+    if (telemetry) {
+      telemetry->stamp_sec = stamp.sec;
+      telemetry->stamp_nanosec = stamp.nanosec;
+      const auto copy_motor = [](const auto & message, auto & destination) {
+          for (const auto & item : message.cmds) {
+            destination.push_back({static_cast<int64_t>(item.name),
+              static_cast<double>(item.kp), static_cast<double>(item.kd),
+              static_cast<double>(item.pos), static_cast<double>(item.spd),
+              static_cast<double>(item.tor)});
+          }
+        };
+      copy_motor(leg_message, telemetry->leg);
+      copy_motor(arm_message, telemetry->arm);
+      for (const auto & item : waist_message.cmds) {
+        telemetry->waist.push_back({static_cast<int64_t>(item.name),
+          static_cast<double>(item.pos), static_cast<double>(item.spd),
+          static_cast<double>(item.cur)});
+      }
+    }
   }
 
   void tick()
   {
+    const auto tick_started = std::chrono::steady_clock::now();
+    std::optional<double> tick_dt;
+    if (previous_tick_) {
+      tick_dt = std::chrono::duration<double>(tick_started - *previous_tick_).count();
+    }
+    previous_tick_ = tick_started;
     JoystickCommand joystick;
     if (robot_io_->last_joystick()) {
       joystick = *robot_io_->last_joystick();
-    } else if (mode_ == PolicyNodeMode::Production) {
-      return;
     }
     const double now = now_sec();
     const auto state = robot_io_->snapshot();
@@ -314,9 +361,21 @@ private:
     const bool motion_reference_valid = motion_timestamp_sec_ > 0.0 &&
       now - motion_timestamp_sec_ <= motion_timeout_sec_ &&
       latest_motion_.size() == static_cast<Eigen::Index>(config_.observation.n_mimic_obs);
+    // Telemetry observes the original early return without executing the FSM or publishing.
+    if (!robot_io_->last_joystick() && mode_ == PolicyNodeMode::Production) {
+      RuntimeStep idle;
+      idle.target_position = state.dof_position;
+      log_sample(now, state, idle, state_ready, motion_ready, motion_reference_valid,
+        false, std::nullopt, motion_timestamp_sec_, tick_started, tick_dt, 0.0, 0.0);
+      return;
+    }
+    const double input_motion_timestamp = motion_timestamp_sec_;
+    const auto runtime_started = std::chrono::steady_clock::now();
     const auto step = runtime_->step(
       now, state, joystick, latest_motion_, state_ready, motion_ready,
       motion_reference_valid);
+    const double runtime_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - runtime_started).count();
     publish_control_mode(step.mode);
 
     if (step.mode == ControlMode::Stop) {
@@ -326,19 +385,22 @@ private:
 
     const bool publish = mode_ == PolicyNodeMode::Production ||
       step.mode == ControlMode::Zero || step.mode == ControlMode::Stop;
+    std::optional<PublishedCommand> published_command;
+    const auto publish_started = std::chrono::steady_clock::now();
     if (publish) {
+      if (logger_) {published_command.emplace();}
       const Eigen::VectorXf effective_kp = step.mode == ControlMode::Stop ?
         Eigen::VectorXf::Zero(kp_.size()) : kp_;
       publish_robot_command(robot_io_->build_command(
         step.target_position, effective_kp, kd_, Eigen::VectorXf(), Eigen::VectorXf(),
-        step.fixed_arm_target_position));
+        step.fixed_arm_target_position), published_command ? &*published_command : nullptr);
     }
 
-    if (logger_) {
-      logger_->write(
-        now, step.mode, step.observation, step.target_position, state.dof_position,
-        state.dof_velocity, latest_motion_);
-    }
+    const double publish_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - publish_started).count();
+    log_sample(now, state, step, state_ready, motion_ready, motion_reference_valid,
+      true, std::move(published_command), input_motion_timestamp,
+      tick_started, tick_dt, runtime_ms, publish_ms);
 
     if (step.mode != previous_mode_) {
       RCLCPP_INFO(
@@ -358,6 +420,64 @@ private:
     }
   }
 
+  void log_sample(
+    double now, const BodyState & state, const RuntimeStep & step,
+    bool state_ready, bool motion_ready, bool motion_reference_valid, bool runtime_executed,
+    std::optional<PublishedCommand> command, double input_motion_timestamp,
+    std::chrono::steady_clock::time_point started, std::optional<double> tick_dt,
+    double runtime_ms, double publish_ms)
+  {
+    if (!logger_) {return;}
+    TelemetrySample sample;
+    sample.timestamp = now;
+    sample.mode = step.mode;
+    sample.observation = step.observation;
+    sample.target = step.target_position;
+    // Preserve the legacy field's post-STOP-reset semantics.
+    sample.motion_reference = latest_motion_;
+    sample.raw_action = step.raw_action;
+    sample.effective_motion_reference = step.effective_mimic;
+    sample.state = state;
+    sample.inference_executed = step.inference_executed;
+    sample.inference_latency_ms = step.inference_latency_ms;
+    sample.command_published = command.has_value();
+    sample.command_published_mask.assign(config_.motor_num, false);
+    if (command) {
+      const auto mark = [&](const auto & items) {
+          for (const auto & item : items) {
+            const auto found = config_.index_by_can_id.find(static_cast<int>(item.name));
+            if (found != config_.index_by_can_id.end()) {
+              sample.command_published_mask[found->second] = true;
+            }
+          }
+        };
+      mark(command->leg); mark(command->arm); mark(command->waist);
+    }
+    sample.command = std::move(command);
+    sample.state_ready = state_ready;
+    sample.motion_ready = motion_ready;
+    sample.motion_reference_valid = motion_reference_valid;
+    sample.runtime_executed = runtime_executed;
+    const auto age = [now](double stamp) -> std::optional<double> {
+        return stamp > 0.0 ? std::optional<double>(now - stamp) : std::nullopt;
+      };
+    sample.input_age_sec = {
+      {"leg", age(state.leg_timestamp_sec)}, {"arm", age(state.arm_timestamp_sec)},
+      {"head", age(state.head_timestamp_sec)}, {"waist", age(state.waist_timestamp_sec)},
+      {"imu", age(state.imu_timestamp_sec)}, {"motion", age(input_motion_timestamp)},
+      {"joy", joy_timestamp_sec_ ? std::optional<double>(now - *joy_timestamp_sec_) : std::nullopt}};
+    sample.motor_feedback = robot_io_->feedback_snapshot();
+    sample.steady_timestamp_sec = std::chrono::duration<double>(
+      started.time_since_epoch()).count();
+    sample.tick_dt_sec = tick_dt;
+    sample.runtime_ms = runtime_ms;
+    sample.command_publish_ms = publish_ms;
+    // Excludes enqueue, asynchronous serialization/disk IO, and diagnostic console reporting.
+    sample.processing_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - started).count();
+    logger_->write(std::move(sample));
+  }
+
   PolicyNode & node_;
   PolicyNodeMode mode_;
   RobotConfig config_;
@@ -368,6 +488,8 @@ private:
   Eigen::VectorXf kp_;
   Eigen::VectorXf kd_;
   double motion_timestamp_sec_{};
+  std::optional<double> joy_timestamp_sec_;
+  std::optional<std::chrono::steady_clock::time_point> previous_tick_;
   double state_timeout_sec_{};
   double motion_timeout_sec_{};
   double report_interval_sec_{};

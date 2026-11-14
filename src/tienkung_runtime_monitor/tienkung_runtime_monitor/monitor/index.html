@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Runtime Monitor · 只读运动监控</title>
+  <link rel="stylesheet" href="/monitor.css">
+  <script type="module" src="/monitor.js"></script>
+</head>
+<body>
+<main>
+  <header><div><p class="eyebrow">ATOM / RUNTIME TELEMETRY</p><h1>实时运动监控</h1><p>有效参考 → 策略目标 → 实际反馈。只读，无任何电机控制入口。</p></div><span id="connection" class="badge" role="status">○ 等待数据</span></header>
+  <section class="controls" aria-label="显示设置">
+    <label>时间窗口<select id="window"><option value="5">最近 5 秒</option><option value="10" selected>最近 10 秒</option><option value="30">最近 30 秒</option></select></label>
+    <label>关节<select id="joint"><option value="0">等待 metadata</option></select></label>
+    <button id="pause" type="button">暂停显示</button>
+    <label>主题<select id="theme"><option value="dark">深色</option><option value="light">浅色</option></select></label>
+    <label class="check"><input id="patterns" type="checkbox">辅助线型</label>
+  </section>
+  <p id="notice" class="notice" role="status">等待日志。先开启策略节点 enable_runtime_log，再将服务指向同一个日志目录。</p>
+  <section class="stats" aria-label="当前采样状态">
+    <div><span>模式 / 命令发布</span><strong id="mode">—</strong></div>
+    <div><span>推理耗时</span><strong id="latency">—</strong></div>
+    <div><span>实际控制周期</span><strong id="period">—</strong></div>
+    <div><span>状态 / 动作参考 readiness</span><strong id="ready">—</strong></div>
+    <div><span>所选关节误差 target − actual</span><strong id="error">—</strong></div>
+    <div><span>采集新鲜度 / 丢日志</span><strong id="freshness">—</strong></div>
+  </section>
+  <section class="panel">
+    <div class="section-head"><h2>运动对比</h2><label>视角<select id="camera"><option value="oblique">斜视</option><option value="front">正视</option><option value="side">侧视</option></select></label><button id="reset-camera" type="button">重置三个视角</button></div>
+    <p id="pose-note">未提供 URDF：显示逐关节角度仪表，不代表机器人几何形状。</p>
+    <p class="hint">每个模型可独立操作：左键/单指拖动旋转，右键/中键或 Shift+拖动平移，滚轮缩放，双击复位。键盘：方向键旋转、Shift+方向键平移、+/- 缩放、Home 复位。棋盘地板固定在 URDF 中性姿态下界，仅作视觉参照，不代表真实地面或接触。</p>
+    <div class="poses">
+      <article><h3><i class="key reference"></i>有效 Motion Reference</h3><canvas id="pose-reference" aria-label="有效参考姿态"></canvas></article>
+      <article><h3><i class="key target"></i>策略后处理目标</h3><canvas id="pose-target" aria-label="策略目标姿态"></canvas></article>
+      <article><h3><i class="key actual"></i>机器人实际反馈</h3><canvas id="pose-actual" aria-label="实际反馈姿态"></canvas></article>
+    </div>
+    <p class="hint">原始 action 是网络输出；target 是动作缩放、裁剪和阻断后的关节目标，并不保证已发布。骨架固定基座、不显示世界位移或接触，不等同于真实机器人轨迹。</p>
+  </section>
+  <section id="charts" class="charts" aria-label="时间序列"></section>
+  <section class="panel">
+    <h2>当前帧 · 全关节数据</h2>
+    <p class="hint">位置 rad，速度 rad/s，力矩估计 Nm。未发布/无效反馈不纳入跟踪误差；“—”表示不可用，不代表 0。</p>
+    <div class="table-scroll"><table><thead><tr><th>关节 / CAN</th><th>有效参考</th><th>Raw action</th><th>Target</th><th>Actual</th><th>误差</th><th>速度</th><th>估计力矩</th><th>状态</th></tr></thead><tbody id="joint-table"></tbody></table></div>
+  </section>
+  <section class="panel"><h2>输入、命令与诊断</h2><div class="diagnostics"><pre id="inputs">等待采样</pre><pre id="commands">等待命令</pre></div><details><summary>运行 metadata / 配置快照</summary><pre id="metadata">等待 metadata</pre></details></section>
+  <section class="panel"><details id="history-details"><summary>曲线数据表（所选关节 / 当前时间窗口）</summary><p class="hint">与曲线相同数据，最多显示最近 1500 帧。图表可聚焦后使用 ← → 查看悬浮读数。</p><div class="table-scroll history"><table><thead><tr><th>时间 s</th><th>模式</th><th>参考 rad</th><th>Target rad</th><th>Actual rad</th><th>Raw action</th><th>速度 rad/s</th><th>估计力矩 Nm</th><th>电流 A*</th><th>Roll rad</th><th>Pitch rad</th><th>推理 ms</th><th>周期 ms</th></tr></thead><tbody id="history-table"></tbody></table></div><p class="hint">* 原始电流单位须以驱动器协议为准。</p></details></section>
+  <footer><span id="source">未连接日志</span><span>监控不是安全保护系统 · 50 Hz 日志无法排除高频机械振动</span></footer>
+</main>
+</body>
+</html>

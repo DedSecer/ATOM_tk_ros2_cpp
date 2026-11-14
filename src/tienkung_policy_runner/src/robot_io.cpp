@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -45,6 +46,9 @@ RobotIo::RobotIo(const RobotConfig & config)
   state_.dof_position = Eigen::VectorXf::Zero(config.motor_num);
   state_.dof_velocity = Eigen::VectorXf::Zero(config.motor_num);
   state_.dof_torque = Eigen::VectorXf::Zero(config.motor_num);
+  feedback_.raw_current = Eigen::VectorXf::Constant(
+    config.motor_num, std::numeric_limits<float>::quiet_NaN());
+  feedback_.raw_valid.assign(config.motor_num, false);
   state_.fixed_arm_position = Eigen::VectorXf::Constant(
     config.fixed_arm_command.ids.size(), config.fixed_arm_command.position);
 }
@@ -53,6 +57,12 @@ void RobotIo::ingest_motor_status(const std::vector<MotorSample> & samples)
 {
   std::vector<bool> updated_mask(config_.motor_num, false);
   for (const auto & sample : samples) {
+    const auto telemetry_index = config_.index_by_can_id.find(sample.can_id);
+    if (telemetry_index != config_.index_by_can_id.end()) {
+      feedback_.raw_current[static_cast<Eigen::Index>(telemetry_index->second)] = sample.current;
+      feedback_.raw_valid[telemetry_index->second] = std::isfinite(sample.position) &&
+        std::isfinite(sample.velocity) && std::isfinite(sample.current);
+    }
     if (!std::isfinite(sample.position) || !std::isfinite(sample.velocity) ||
       !std::isfinite(sample.current))
     {
@@ -98,6 +108,7 @@ void RobotIo::ingest_leg_status(
   const std::vector<MotorSample> & samples, double stamp_sec)
 {
   ingest_motor_status(samples);
+  feedback_.leg = {samples, stamp_sec};
   state_.leg_timestamp_sec = stamp_sec;
   state_.leg_complete = all_valid(config_.leg_indices);
 }
@@ -106,6 +117,7 @@ void RobotIo::ingest_arm_status(
   const std::vector<MotorSample> & samples, double stamp_sec)
 {
   ingest_motor_status(samples);
+  feedback_.arm = {samples, stamp_sec};
   state_.arm_timestamp_sec = stamp_sec;
   state_.arm_complete = all_valid(config_.arm_indices);
   state_.fixed_arm_complete = std::all_of(
@@ -116,6 +128,7 @@ void RobotIo::ingest_head_status(
   const std::vector<MotorSample> & samples, double stamp_sec)
 {
   ingest_motor_status(samples);
+  feedback_.head = {samples, stamp_sec};
   state_.head_timestamp_sec = stamp_sec;
   state_.head_complete = all_valid(config_.head_indices);
 }
@@ -124,6 +137,7 @@ void RobotIo::ingest_waist_status(
   const std::vector<MotorSample> & samples, double stamp_sec)
 {
   ingest_motor_status(samples);
+  feedback_.waist = {samples, stamp_sec};
   state_.waist_timestamp_sec = stamp_sec;
   state_.waist_complete = all_valid(config_.waist_indices);
 }
@@ -156,6 +170,17 @@ bool RobotIo::all_valid(const std::vector<int> & indices) const
 BodyState RobotIo::snapshot() const
 {
   return state_;
+}
+
+MotorFeedbackSnapshot RobotIo::feedback_snapshot() const
+{
+  auto result = feedback_;
+  result.position = raw_position_;
+  result.velocity = raw_velocity_;
+  result.current = raw_current_;
+  result.valid = valid_mask_;
+  result.fixed_arm_valid = fixed_arm_valid_mask_;
+  return result;
 }
 
 const std::optional<JoystickCommand> & RobotIo::last_joystick() const noexcept

@@ -14,6 +14,7 @@ find_package(bodyctrl_msgs REQUIRED)
 find_package(tienkung_interfaces REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(Threads REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -71,7 +72,7 @@ target_include_directories(${PROJECT_NAME}_core
     ${CMAKE_CURRENT_SOURCE_DIR}/native
 )
 target_link_libraries(${PROJECT_NAME}_core
-  PUBLIC Eigen3::Eigen
+  PUBLIC Eigen3::Eigen Threads::Threads
   PRIVATE yaml-cpp ${ONNXRUNTIME_LIBRARY} funcSPTrans
 )
 target_compile_options(${PROJECT_NAME}_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -122,9 +123,18 @@ install(DIRECTORY native/lib/ DESTINATION lib
   FILES_MATCHING PATTERN "libfuncSPTrans.so*")
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(Eigen3)
+ament_export_dependencies(Eigen3 Threads)
 
 if(BUILD_TESTING)
+  add_executable(test_telemetry test/test_telemetry.cpp)
+  target_link_libraries(test_telemetry ${PROJECT_NAME}_core)
+  add_test(NAME test_telemetry COMMAND test_telemetry)
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME test_telemetry_json
+      COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/test/test_telemetry_json.py
+        $<TARGET_FILE:test_telemetry>)
+  endif()
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_policy_core test/test_policy_core.cpp)
   if(TARGET test_policy_core)

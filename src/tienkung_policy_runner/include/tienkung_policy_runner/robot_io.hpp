@@ -20,6 +20,23 @@ struct MotorSample {
   float current{};
 };
 
+// Latest received group payloads, including rejected/nonfinite/unknown CAN samples.
+struct MotorFeedbackGroup {
+  std::vector<MotorSample> samples;
+  std::optional<double> timestamp_sec;
+};
+
+struct MotorFeedbackSnapshot {
+  MotorFeedbackGroup leg, arm, head, waist;
+  // Cached motor-space values after jump filtering, before calibration/transmission.
+  Eigen::VectorXf position, velocity, current;
+  std::vector<bool> valid;
+  std::vector<bool> fixed_arm_valid;
+  // Latest unfiltered received currents in policy CAN order; unseen entries are NaN.
+  Eigen::VectorXf raw_current;
+  std::vector<bool> raw_valid;
+};
+
 struct BodyState {
   Eigen::VectorXf dof_position;
   Eigen::VectorXf dof_velocity;
@@ -77,6 +94,7 @@ public:
   void ingest_joystick(const JoystickCommand & command);
 
   BodyState snapshot() const;
+  MotorFeedbackSnapshot feedback_snapshot() const;
   const std::optional<JoystickCommand> & last_joystick() const noexcept;
   RobotCommand build_command(
     const Eigen::VectorXf & target_position,
@@ -103,6 +121,7 @@ private:
   std::vector<bool> valid_mask_;
   std::vector<bool> fixed_arm_valid_mask_;
   BodyState state_;
+  MotorFeedbackSnapshot feedback_;
   std::optional<JoystickCommand> last_joystick_;
 };
 

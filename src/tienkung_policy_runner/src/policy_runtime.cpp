@@ -76,6 +76,8 @@ RuntimeStep PolicyRuntime::step(
     mimic_interpolator_.reset();
   }
 
+  result.effective_mimic = effective_mimic;
+
   const bool run_inference = result.mode == ControlMode::Policy || infer_in_inactive_modes_;
   if (run_inference) {
     result.observation = observation_builder_.build_observation(
