@@ -197,6 +197,128 @@ class TailTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
 
 
+class ReplayTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'replay.jsonl'
+
+    def replay(self, data, **kwargs):
+        self.path.write_bytes(data)
+        replay = monitor_module.ReplayMonitor(log_file=self.path, **kwargs)
+        self.addCleanup(replay.close)
+        replay.start()
+        replay._thread.join(timeout=3)
+        self.assertFalse(replay._thread.is_alive())
+        return replay
+
+    def test_index_seek_clock_and_partial(self):
+        data = line(METADATA) + b'bad\n' + b''.join(
+            line(sample(t, timing={'steady_timestamp_sec': s})) for t, s in
+            [(10, 100), (11, 101), (9, 99), (10, 100)]) + b'{partial'
+        replay = self.replay(data)
+        snapshot = replay.snapshot()
+        self.assertEqual(snapshot['frames'], [])
+        self.assertEqual(snapshot['metadata'], METADATA)
+        self.assertEqual(snapshot['playback']['frame_count'], 4)
+        self.assertEqual(snapshot['playback']['clock']['source'], 'steady_timestamp_sec')
+        self.assertEqual(snapshot['playback']['clock']['backward_jumps'], 1)
+        self.assertEqual(snapshot['parse_errors'], 1)
+        self.assertEqual(snapshot['skipped_lines'], 1)
+        self.assertEqual(list(replay.times), [0, 1, 1, 2])
+        page = replay.replay(frame=1)
+        self.assertEqual(page['selected_frame']['replay_frame_index'], 1)
+        self.assertNotIn('obs', page['selected_frame'])
+        self.assertEqual(replay.replay(seconds=1)['selected_frame']['replay_frame_index'], 2)
+        self.assertEqual(replay.replay(frame=999)['playback']['position_index'], 3)
+        self.assertEqual(replay.replay(seconds=999)['playback']['position_index'], 3)
+        self.assertEqual(replay.replay(frame=0)['playback']['position_index'], 0)
+
+    def test_ros_fallback_and_bounded_lines(self):
+        replay = self.replay(line(METADATA) + b'x' * 600 + b'\n' +
+                             line(sample(5)) + line(sample(3)) + line(sample(4)),
+                             max_line_bytes=512)
+        self.assertEqual(list(replay.times), [0, 0, 1])
+        self.assertEqual(replay.snapshot()['playback']['clock']['source'], 'timestamp')
+        self.assertEqual(replay.skipped_lines, 1)
+
+    def test_mutation_and_replacement_fail_closed(self):
+        replay = self.replay(line(METADATA) + line(sample()))
+        with self.path.open('ab') as stream:
+            stream.write(line(sample(2)))
+        self.assertEqual(replay.replay(frame=0)['playback']['status'], 'error')
+        self.assertIn('changed', replay.snapshot()['playback']['error'])
+        replay = self.replay(line(METADATA) + line(sample()))
+        self.path.unlink()
+        self.path.write_bytes(line(METADATA) + line(sample()))
+        self.assertEqual(replay.snapshot()['playback']['status'], 'error')
+
+    def test_byte_bound_contiguous_next_and_frame_cap(self):
+        data = line(METADATA) + b''.join(line(sample(i * .01)) for i in range(2000))
+        replay = self.replay(data, max_history_bytes=1000)
+        page = replay.replay(frame=1000, window_sec=30)
+        indexes = [f['replay_frame_index'] for f in page['frames']]
+        self.assertIn(1000, indexes)
+        self.assertIn(1001, indexes)
+        self.assertTrue(page['truncated'])
+        self.assertEqual(indexes, list(range(indexes[0], indexes[-1] + 1)))
+        self.assertLessEqual(len(json.dumps(page['frames'], separators=(',', ':'))), 1100)
+
+    def test_forward_page_excludes_history_with_duplicate_timestamps(self):
+        replay = self.replay(line(METADATA) + b''.join(
+            line(sample(t)) for t in (1, 2, 2, 2, 3, 4)))
+        page = replay.replay(frame=3, window_sec=0, ahead_sec=4)
+        self.assertEqual([f['replay_frame_index'] for f in page['frames']], [3, 4, 5])
+        self.assertEqual(page['selected_frame']['replay_frame_index'], 3)
+
+    def test_long_history_reserves_forward_frames(self):
+        replay = self.replay(line(METADATA) + b''.join(
+            line(sample(i * .02)) for i in range(2500)))
+        page = replay.replay(frame=1600, window_sec=30, ahead_sec=4)
+        indexes = [f['replay_frame_index'] for f in page['frames']]
+        self.assertLessEqual(len(indexes), 1500)
+        self.assertGreaterEqual(indexes[-1], 1799)
+        self.assertIn(1600, indexes)
+        self.assertTrue(page['truncated'])
+
+    def test_http_validation_and_host_security(self):
+        replay = self.replay(line(METADATA) + line(sample(1)) + line(sample(2)))
+        server = monitor_module.MonitorServer(('127.0.0.1', 0), replay)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def cleanup():
+            server.shutdown()
+            thread.join()
+            server.server_close()
+        self.addCleanup(cleanup)
+        def request(path, headers=None):
+            conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+            try:
+                conn.request('GET', path, headers=headers or {})
+                response = conn.getresponse()
+                return response.status, json.loads(response.read())
+            finally:
+                conn.close()
+        self.assertEqual(request('/api/snapshot')[1]['playback']['status'], 'ready')
+        self.assertEqual(request('/api/health')[0], 200)
+        self.assertEqual(request('/api/replay?frame=1&window_sec=30')[1]['playback']['position_index'], 1)
+        for query in ('', '?frame=-1', '?time=nan', '?frame=1&time=1',
+                      '?frame=1&frame=2', '?frame=0&window_sec=31'):
+            self.assertEqual(request('/api/replay' + query)[0], 400)
+        self.assertEqual(request('/api/replay?frame=0', {'Host': 'evil.example'})[0], 403)
+        with self.path.open('ab') as stream:
+            stream.write(line(sample(3)))
+        status, body = request('/api/replay?frame=0')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['playback']['status'], 'error')
+        self.assertIn('changed', body['playback']['error'])
+
+    def test_empty_file_reports_error(self):
+        replay = self.replay(line(METADATA) + b'bad\n')
+        self.assertEqual(replay.snapshot()['playback']['status'], 'error')
+        self.assertIn('no valid frames', replay.snapshot()['playback']['error'])
+
+
 class UrdfTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

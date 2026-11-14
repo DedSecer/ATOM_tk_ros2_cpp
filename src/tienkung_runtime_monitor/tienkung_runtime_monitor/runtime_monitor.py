@@ -7,6 +7,8 @@ Use a trusted network or an authenticated reverse proxy, never the public Intern
 """
 
 import argparse
+from array import array
+import bisect
 from collections import deque
 import ipaddress
 import json
@@ -29,6 +31,7 @@ STATIC_ROUTES = {
     "/monitor.js": ("monitor.js", "text/javascript; charset=utf-8"),
     "/monitor.css": ("monitor.css", "text/css; charset=utf-8"),
     "/robot_view.js": ("robot_view.js", "text/javascript; charset=utf-8"),
+    "/replay_buffer.js": ("replay_buffer.js", "text/javascript; charset=utf-8"),
 }
 
 
@@ -545,6 +548,210 @@ class RuntimeMonitor:
             }
 
 
+class ReplayMonitor(RuntimeMonitor):
+    """Index a fixed JSONL snapshot without retaining sample objects."""
+
+    def __init__(self, *, log_file, urdf=None, max_line_bytes=1024 * 1024,
+                 max_history_bytes=32 * 1024 * 1024):
+        super().__init__(log_file=log_file, urdf=urdf, max_line_bytes=max_line_bytes,
+                         max_history_bytes=max_history_bytes)
+        self.source = str(self.log_file)
+        self.generation = 1
+        self.offsets = array('Q')
+        self.times = array('d')
+        self.status = 'indexing'
+        self.indexed_bytes = 0
+        self.total_bytes = 0
+        self.clock = {'source': None, 'backward_jumps': 0, 'fallbacks': 0}
+        self._signature = None
+
+    @staticmethod
+    def _signature_of(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _check_file(self, stream=None):
+        info = self.log_file.stat()
+        if (not stat.S_ISREG(info.st_mode) or self._signature_of(info) != self._signature or
+                (stream is not None and self._signature_of(os.fstat(stream.fileno())) != self._signature)):
+            raise ValueError('replay file changed, truncated, or replaced')
+
+    def _fail(self, exc):
+        with self._lock:
+            self.status = 'error'
+            self.last_error = str(exc)
+
+    def _run(self):
+        try:
+            fd = os.open(self.log_file, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError('replay source must be a regular file')
+                self._signature = self._signature_of(info)
+                self.total_bytes = info.st_size
+                self._check_file(stream)
+                previous = None
+                previous_ros = None
+                elapsed = 0.0
+                while not self._stop.is_set() and stream.tell() < self.total_bytes:
+                    offset = stream.tell()
+                    raw = stream.readline(self.max_line_bytes + 1)
+                    if len(raw) > self.max_line_bytes:
+                        while raw and not raw.endswith(b'\n') and not self._stop.is_set():
+                            raw = stream.readline(self.max_line_bytes + 1)
+                        self.skipped_lines += 1
+                    elif not raw.endswith(b'\n'):
+                        self.skipped_lines += 1
+                    elif not raw.strip():
+                        self.skipped_lines += 1
+                    else:
+                        value = self._decode(raw)
+                        if value is not None:
+                            kind = value.get('type')
+                            if kind in ('metadata', 'logger_stats'):
+                                self._record(raw)
+                            else:
+                                stamp = value.get('timestamp')
+                                if (type(stamp) not in (int, float) or
+                                        not isinstance(value.get('mode'), (str, int))):
+                                    self.parse_errors += 1
+                                else:
+                                    try:
+                                        stamp = float(stamp)
+                                        if not math.isfinite(stamp):
+                                            raise ValueError('invalid timestamp')
+                                        timing = value.get('timing')
+                                        steady = (timing.get('steady_timestamp_sec')
+                                                  if isinstance(timing, dict) else None)
+                                        if type(steady) not in (int, float) or not math.isfinite(float(steady)):
+                                            steady = None
+                                        else:
+                                            steady = float(steady)
+                                        if not self.offsets:
+                                            self.clock['source'] = 'steady_timestamp_sec' if steady is not None else 'timestamp'
+                                        current = steady if self.clock['source'] == 'steady_timestamp_sec' else stamp
+                                        if previous_ros is not None:
+                                            if current is None or previous is None:
+                                                delta = stamp - previous_ros
+                                                self.clock['fallbacks'] += 1
+                                            else:
+                                                delta = current - previous
+                                            if delta < 0:
+                                                self.clock['backward_jumps'] += 1
+                                                delta = 0.0
+                                            elapsed += delta
+                                            if not math.isfinite(elapsed):
+                                                raise ValueError('clock duration overflow')
+                                        self.offsets.append(offset)
+                                        self.times.append(elapsed)
+                                        previous, previous_ros = current, stamp
+                                    except (ValueError, OverflowError):
+                                        self.parse_errors += 1
+                    self.indexed_bytes = stream.tell()
+                if self._stop.is_set():
+                    return
+                self._check_file(stream)
+                if not self.offsets:
+                    raise ValueError('replay file contains no valid frames')
+                with self._lock:
+                    self.last_seq = len(self.offsets)
+                    self.status = 'ready'
+        except (OSError, ValueError) as exc:
+            self._fail(exc)
+
+    def start(self):
+        with self._lock:
+            if self._thread is not None:
+                return
+            self._thread = threading.Thread(target=self._run, name='runtime-replay-index', daemon=True)
+            self._thread.start()
+
+    def snapshot(self, after=0, include_frames=True):
+        if self.status == 'ready':
+            try:
+                self._check_file()
+            except (OSError, ValueError) as exc:
+                self._fail(exc)
+        result = super().snapshot(after, include_frames=False)
+        result['playback'] = {
+            'mode': 'replay', 'status': self.status, 'frame_count': len(self.offsets),
+            'duration_sec': self.times[-1] if self.times else 0.0,
+            'indexed_bytes': self.indexed_bytes, 'total_bytes': self.total_bytes,
+            'error': self.last_error, 'clock': dict(self.clock),
+        }
+        return result
+
+    def replay(self, *, frame=None, seconds=None, window_sec=10.0, ahead_sec=2.0):
+        result = self.snapshot()
+        if self.status != 'ready':
+            return result
+        if not self.offsets:
+            result['selected_frame'] = None
+            result['playback'].update(position_index=None, position_sec=0.0)
+            return result
+        index = (min(frame, len(self.offsets) - 1) if frame is not None else
+                 max(0, bisect.bisect_right(self.times, seconds) - 1))
+        index = min(index, len(self.offsets) - 1)
+        # window_sec=0 is an incremental forward page, even with duplicate timestamps.
+        start = (index if window_sec == 0 else
+                 bisect.bisect_left(self.times, max(0.0, self.times[index] - window_sec)))
+        end = bisect.bisect_right(self.times, self.times[index] + ahead_sec)
+        requested_start, requested_end = start, end
+        # Reserve forward frames before history so a 30s chart cannot starve playback.
+        end = min(len(self.offsets), max(index + 2, end), index + 1500)
+        start = max(start, end - 1500)
+        try:
+            with self.log_file.open('rb') as stream:
+                self._check_file(stream)
+                def read_frame(i):
+                    stream.seek(self.offsets[i])
+                    raw = stream.readline(self.max_line_bytes + 1)
+                    if len(raw) > self.max_line_bytes or not raw.endswith(b'\n'):
+                        raise ValueError('replay indexed line changed')
+                    value = json.loads(raw, parse_constant=_reject_constant, parse_float=_finite_float)
+                    value.pop('obs', None)
+                    value['monitor_seq'] = i + 1
+                    value['replay_frame_index'] = i
+                    value['replay_time_sec'] = self.times[i]
+                    return value
+                selected = read_frame(index)
+                frames = [selected]
+                size = len(json.dumps(selected, ensure_ascii=True, separators=(',', ':')))
+                # Account for the duplicated selected_frame and envelope in the HTTP budget.
+                envelope = len(json.dumps(result, ensure_ascii=True, separators=(',', ':')))
+                limit = min(self.max_history_bytes, 32 * 1024 * 1024 - envelope - size - 4096)
+                if size > limit:
+                    raise ValueError('replay selected frame exceeds response byte limit')
+                for i in range(index + 1, end):
+                    value = read_frame(i)
+                    length = len(json.dumps(value, ensure_ascii=True, separators=(',', ':'))) + 1
+                    if size + length > limit:
+                        if i == index + 1:
+                            raise ValueError('replay selected frames exceed response byte limit')
+                        break
+                    frames.append(value)
+                    size += length
+                history = []
+                for i in range(index - 1, start - 1, -1):
+                    value = read_frame(i)
+                    length = len(json.dumps(value, ensure_ascii=True, separators=(',', ':'))) + 1
+                    if size + length > limit:
+                        break
+                    history.append(value)
+                    size += length
+                frames = list(reversed(history)) + frames
+                self._check_file(stream)
+            result['frames'] = frames
+            result['truncated'] = (frames[0]['replay_frame_index'] > requested_start or
+                                   frames[-1]['replay_frame_index'] + 1 < requested_end)
+            result['selected_frame'] = dict(selected)
+            result['playback'].update(position_index=index, position_sec=self.times[index])
+            return result
+        except (OSError, ValueError, UnicodeError) as exc:
+            self._fail(exc)
+            return self.snapshot()
+
+
 class MonitorServer(HTTPServer):
     """Fixed-route server, with one background log reader and bounded requests."""
 
@@ -639,6 +846,41 @@ class MonitorHandler(BaseHTTPRequestHandler):
         if parsed.scheme or parsed.netloc or parsed.fragment or not self.path.startswith("/"):
             self._error(400, "Invalid request target")
             return
+        if parsed.path == "/api/replay" and isinstance(self.server.monitor, ReplayMonitor):
+            try:
+                query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=4)
+                if (set(query) - {'frame', 'time', 'window_sec', 'ahead_sec'} or
+                        ('frame' in query) == ('time' in query) or
+                        any(len(values) != 1 for values in query.values())):
+                    raise ValueError('invalid replay query')
+                frame = None
+                seconds = None
+                if 'frame' in query:
+                    text = query['frame'][0]
+                    if not text.isascii() or not text.isdigit() or len(text) > 19:
+                        raise ValueError('invalid frame')
+                    frame = int(text)
+                    if frame > 2 ** 63 - 1:
+                        raise ValueError('frame too large')
+                else:
+                    seconds = _finite_float(query['time'][0])
+                    if seconds < 0:
+                        raise ValueError('invalid time')
+                window = _finite_float(query.get('window_sec', ['10'])[0])
+                ahead = _finite_float(query.get('ahead_sec', ['2'])[0])
+                if not 0 <= window <= 30 or not 0 <= ahead <= 30:
+                    raise ValueError('invalid window')
+            except (ValueError, OverflowError):
+                self._error(400, 'Expected frame or time and bounded window')
+                return
+            snapshot = self.server.monitor.replay(frame=frame, seconds=seconds,
+                                                  window_sec=window, ahead_sec=ahead)
+            payload = json.dumps(snapshot, allow_nan=False, separators=(',', ':')).encode('utf-8')
+            if len(payload) > 32 * 1024 * 1024:
+                self._error(503, 'Replay response exceeds byte limit')
+            else:
+                self._reply(200, payload)
+            return
         if parsed.path in ("/api/snapshot", "/api/health"):
             try:
                 query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=4)
@@ -725,6 +967,7 @@ def main(argv=None):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--log-file", help="Explicit JSONL path (may not exist yet)")
     source.add_argument("--log-dir", help="Directory to watch for the newest matching run")
+    parser.add_argument("--replay", action="store_true", help="Replay a fixed JSONL file")
     parser.add_argument("--pattern", default="policy_log_*.jsonl")
     parser.add_argument("--bind", default="0.0.0.0", help="Numeric listen address; defaults to all IPv4 interfaces, without authentication")
     parser.add_argument("--port", type=int, default=8080)
@@ -741,17 +984,24 @@ def main(argv=None):
         parser.error("port must be between 0 and 65535")
     if args.asset_root and not args.urdf:
         parser.error("--asset-root requires --urdf")
+    if args.replay and not args.log_file:
+        parser.error("--replay requires --log-file")
     try:
         mesh_files = []
         urdf = load_urdf(args.urdf, asset_root=args.asset_root, mesh_files=mesh_files)
         asset_root = (Path(args.asset_root).resolve() if args.asset_root else
                       (Path(args.urdf).resolve().parent if args.urdf else None))
-        monitor = RuntimeMonitor(
-            log_file=args.log_file, log_dir=args.log_dir, pattern=args.pattern,
-            history_limit=args.history_frames, response_limit=args.response_frames,
-            max_tail_bytes=args.max_tail_bytes, max_line_bytes=args.max_line_bytes,
-            max_history_bytes=args.max_history_bytes, include_obs=args.include_obs,
-            urdf=urdf)
+        if args.replay:
+            monitor = ReplayMonitor(log_file=args.log_file, urdf=urdf,
+                                    max_line_bytes=args.max_line_bytes,
+                                    max_history_bytes=args.max_history_bytes)
+        else:
+            monitor = RuntimeMonitor(
+                log_file=args.log_file, log_dir=args.log_dir, pattern=args.pattern,
+                history_limit=args.history_frames, response_limit=args.response_frames,
+                max_tail_bytes=args.max_tail_bytes, max_line_bytes=args.max_line_bytes,
+                max_history_bytes=args.max_history_bytes, include_obs=args.include_obs,
+                urdf=urdf)
         server = MonitorServer((args.bind, args.port), monitor,
                                mesh_files=mesh_files, asset_root=asset_root)
     except (OSError, ValueError) as exc:

@@ -99,6 +99,45 @@ ssh -N -L 8080:127.0.0.1:8080 robot@BOARD_IP
 - dry-run 日志使用 `pattern:=dry_run_log_*.jsonl`。dry-run POLICY 不发布策略动作，但 ZERO 会发真实归零命令。当前 STOP 实现也会发布 kp=0、保留 kd 的电机命令及腰部命令；本次没有改变该语义。
 - 数据变旧或连接中断时保留最后帧并明确标记过期，不据此判定硬件安全。磁盘日志不会自动轮转，部署时需监控剩余空间。
 
+## 5. 完整离线回放
+
+回放已停止写入的 JSONL 文件，不需要启动策略节点或连接机器人。`log_file` 指向服务所在机器上的文件；必须显式开启 `replay`，否则仍使用实时尾读模式。
+
+```bash
+ros2 launch tienkung_runtime_monitor runtime_monitor.launch.py \
+  replay:=true \
+  log_file:=/absolute/path/to/walk.jsonl \
+  urdf_path:=/opt/robot_assets/walker/urdf/walker_tienkung_ei_nofinger.urdf \
+  asset_root:=/opt/robot_assets/walker
+```
+
+也可使用不依赖 ROS 的 Python 入口（工作区根目录）：
+
+```bash
+python3 src/tienkung_runtime_monitor/tienkung_runtime_monitor/runtime_monitor.py \
+  --replay --log-file /absolute/path/to/walk.jsonl \
+  --urdf /opt/robot_assets/walker/urdf/walker_tienkung_ei_nofinger.urdf
+```
+
+页面会显示索引进度，完成后停在第一条有效采样，不自动播放：
+
+- **播放/暂停**：从当前位置播放到末尾；末尾再次点击播放会回到第一帧。
+- **时间轴拖动**：预览并跳转至相应时刻，拖动会暂停播放。
+- **按秒跳转**：输入距日志首帧的秒数，例如 `573.74`，点击“跳转”或按 Enter。选择不晚于该时刻的采样，超出末尾则定位最后一帧。
+- **倍速**：0.25×、0.5×、1×、2×、4×。页面约每 33 ms 选取一次历史采样，不插值伪造动作；高倍速可能跳过部分显示帧，逐帧检查请用下一项。
+- **上一帧/下一帧**：暂停并精确移动一条有效采样，显示当前帧序号（从 1 开始）。
+- **曲线与模型同步**：按选中帧显示向前 5/10/30 秒的曲线，保留手动相机视角。切到后台标签页自动暂停。
+
+服务后台逐行扫描全文件，只保留每帧的文件偏移与相对时间索引（约 16 字节/帧，不含固定对象开销），不是把整个 1 GB 日志装入内存。首次定位读取曲线历史及后续帧；连续播放在缓存耗尽前后台预取，只请求缓存末尾之后的新帧，不重复传输历史。预取长度随倍速在 4–12 秒日志时间之间调整，触发时机根据实测请求耗时留出余量。预取成功不暂停或重置播放时钟；只有数据确实耗尽才显示“缓冲后续帧”，冻结在最后有效帧，恢复后继续而不跳过等待期间的数据。
+
+单次响应最多 1500 帧且受字节限制，服务优先保留后续帧；浏览器滚动缓存最多 3000 帧，淘汰旧历史而非整份日志。窗口被截短时有提示。模型采样显示循环约 30 Hz，曲线/关节表/诊断最多 5 Hz，展开的历史数据表最多 1 Hz；暂停或手动定位时立即刷新所有信息。实际帧率仍受 GPU、网络和数据解析耗时影响，不承诺硬实时播放倍速。
+
+时间轴优先使用 `timing.steady_timestamp_sec`，缺失时按可用日志时间回退；时间倒退增量压为 0，并报告时钟回退次数。原始 ROS timestamp 仍显示在帧信息中。无效行、超长行和未完成尾行跳过并计数，逐帧以成功索引的有效采样为单位。
+
+回放期间不要追加、替换或修改日志；检测到文件变化会拒绝继续读取，需要重启服务重新建立索引。历史数据不会显示为“实时过期”，历史 `command_published` 仅表示当时的发布记录，不会重发任何命令。
+
+部署后建议检查：从头播放到末尾、跳转到 `573.74` 秒、连续逐帧前后移动、切换倍速、拖动时间轴取消正在加载的旧请求，以及在实时模式下原有监控是否正常。
+
 ## 日志格式（schema v2）
 
 第一行 `type: metadata`，包含 `joint_order_policy`、`can_id_by_index`、解析后的 `config`、`runtime` 和模型/config/manifest 路径。路径不是内容哈希，复现实验时应另行归档原始模型、manifest、配置和代码版本。
@@ -125,6 +164,7 @@ ssh -N -L 8080:127.0.0.1:8080 robot@BOARD_IP
 
 - `GET /api/snapshot?after=N`：metadata、增量 frames（附 `monitor_seq`）、generation、最新序号、source、age、错误/跳过计数、URDF 和 logger_stats。启动 after=0 返回有界历史；换文件/截断后 generation 变化。
 - `GET /api/health`：轻量服务状态。健康仅代表服务状态，不代表机器人状态。
+- 回放模式 `/api/snapshot` 附带 `playback` 索引状态与进度；`GET /api/replay?time=573.74&window_sec=10&ahead_sec=2` 或 `?frame=28683` 按时间/从 0 开始的帧号返回 `selected_frame` 及有界 `frames`。帧含 `replay_frame_index`、`replay_time_sec`；两个定位参数不能同时提供。播放速度和暂停状态在浏览器维护，不操作机器人。
 - 只读固定静态页面和 URDF 明确引用的编号 mesh 路由；无电机控制、上传或任意文件下载接口。
 
 ## 部署环境验证（未在本机执行 ROS 验证）
@@ -133,7 +173,7 @@ ssh -N -L 8080:127.0.0.1:8080 robot@BOARD_IP
 colcon test --packages-select tienkung_policy_runner tienkung_motion_source tienkung_runtime_monitor
 colcon test-result --verbose
 # 可选：前端纯逻辑测试，需要 Node.js
-node --test src/tienkung_runtime_monitor/test/test_robot_view.mjs
+node --test src/tienkung_runtime_monitor/test/test_robot_view.mjs src/tienkung_runtime_monitor/test/test_replay_buffer.mjs
 ```
 
 在断开执行器或经现场安全批准的条件下验证对应 dry-run、日志实时增长、参考/target/feedback 关节映射、超时提示、STOP/ZERO/POLICY 命令语义、日志写入开销和长时间磁盘占用。本地网页/纯逻辑检查不能代替 Linux ROS 或实机验证。

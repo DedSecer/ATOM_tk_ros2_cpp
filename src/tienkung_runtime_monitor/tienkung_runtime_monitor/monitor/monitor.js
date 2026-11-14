@@ -1,4 +1,5 @@
 import {RobotView} from './robot_view.js';
+import {frameAtTime, appendReplayFrames, prefetchNeeded} from './replay_buffer.js';
 
 const $ = id => document.getElementById(id);
 const finite = Number.isFinite;
@@ -10,6 +11,12 @@ const color = i => styles().getPropertyValue(`--series-${i + 1}`).trim();
 let frames = [], metadata = null, generation = null, sequence = 0, snapshot = null;
 let paused = false, displayed = [], selectedFrame = null, modelKey = '', views = [];
 let lastResponse = 0, disconnected = false;
+let replay = null, playing = false, replayBusy = false, replayError = '', replayRequest = 0;
+let replayAbort = null, replayWall = 0, replayAnchor = 0, replaySpeed = 1, replayTimer = null;
+let scrubbing = false, seekTimer = null, playIntent = 0;
+let prefetchAbort = null, prefetchLatency = .5, replayBuffering = false;
+let lastDashboardRender = -Infinity, lastHistoryRender = -Infinity;
+const frameTime = f => replay ? f.replay_time_sec : f.timestamp;
 const names = () => metadata?.joint_order_policy || [];
 const config = () => metadata?.config || {};
 const index = () => Number($('joint').value) || 0;
@@ -76,22 +83,22 @@ function drawChart(chart) {
   const values=chart.series.flatMap(s=>displayed.map(f=>s.read(f,index()))).filter(finite);
   let lo=values.length?Math.min(...values):0, hi=values.length?Math.max(...values):1;
   const pad=Math.max((hi-lo)*.1,.01);lo-=pad;hi+=pad;
-  const t0=displayed[0]?.timestamp||0,t1=displayed.at(-1)?.timestamp||t0+1;
-  const x=f=>left+(f.timestamp-t0)/Math.max(.001,t1-t0)*pw,y=v=>top+(hi-v)/(hi-lo)*ph;
+  const t0=displayed.length?frameTime(displayed[0]):0,t1=displayed.length?frameTime(displayed.at(-1)):t0+1;
+  const x=f=>left+(frameTime(f)-t0)/Math.max(.001,t1-t0)*pw,y=v=>top+(hi-v)/(hi-lo)*ph;
   ctx.font='11px system-ui';ctx.fillStyle=ink;ctx.strokeStyle=css.getPropertyValue('--grid');ctx.lineWidth=1;ctx.setLineDash([]);
   for(let k=0;k<5;k++){const value=lo+(hi-lo)*k/4,py=y(value);ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(left+pw,py);ctx.stroke();ctx.textAlign='right';ctx.fillText(fmt(value,2),left-7,py+4);}
   ctx.textAlign='left';ctx.fillText(chart.unit,left,12);ctx.textAlign='center';ctx.fillText(`${fmt(t0,2)} → ${fmt(t1,2)} s`,left+pw/2,h-8);
   const labels=[];
   chart.series.forEach((s,k)=>{
     ctx.strokeStyle=color(s.slot);ctx.lineWidth=2;ctx.lineJoin='round';ctx.setLineDash($('patterns').checked?[[0],[7,4],[2,4]][s.slot]:[]);ctx.beginPath();let connected=false,last=null,prior=null;
-    displayed.forEach(f=>{const v=s.read(f,index());if(!finite(v)){connected=false;prior=null;return;}if(prior&&(f.timestamp-prior.timestamp>.15||f.timestamp<prior.timestamp))connected=false;
+    displayed.forEach(f=>{const v=s.read(f,index());if(!finite(v)){connected=false;prior=null;return;}if(prior&&(frameTime(f)-frameTime(prior)>.15||frameTime(f)<frameTime(prior)))connected=false;
       if(connected)ctx.lineTo(x(f),y(v));else ctx.moveTo(x(f),y(v));connected=true;last={x:x(f),y:y(v),v};prior=f;});ctx.stroke();ctx.setLineDash([]);
     if(last)labels.push({...last,label:s.label,slot:s.slot});
   });
   labels.sort((a,b)=>a.y-b.y);let previous=-20;
   labels.forEach(l=>{const ly=Math.max(top+8,Math.min(h-bottom-3,Math.max(l.y,previous+16)));previous=ly;ctx.strokeStyle=color(l.slot);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(l.x,l.y);ctx.lineTo(left+pw+7,ly);ctx.stroke();ctx.fillStyle=text;ctx.textAlign='left';ctx.fillText(`${l.label} ${fmt(l.v,2)}`,left+pw+10,ly+4);});
   const frame=displayed[Math.max(0,Math.min(displayed.length-1,chart.hover??displayed.length-1))];
-  if(frame){if(chart.hover!==null){ctx.strokeStyle=ink;ctx.beginPath();ctx.moveTo(x(frame),top);ctx.lineTo(x(frame),h-bottom);ctx.stroke();}chart.readout.textContent=`t=${fmt(frame.timestamp,3)} · ${frame.mode}\n`+chart.series.map(s=>`${s.label}: ${fmt(s.read(frame,index()))}`).join('  |  ');}else chart.readout.textContent='等待有效数据';
+  if(frame){if(chart.hover!==null){ctx.strokeStyle=ink;ctx.beginPath();ctx.moveTo(x(frame),top);ctx.lineTo(x(frame),h-bottom);ctx.stroke();}chart.readout.textContent=`t=${fmt(frameTime(frame),3)} · ${frame.mode}\n`+chart.series.map(s=>`${s.label}: ${fmt(s.read(frame,index()))}`).join('  |  ');}else chart.readout.textContent='等待有效数据';
 }
 function tableRow(values) { const tr=document.createElement('tr');values.forEach(v=>{const td=document.createElement('td');td.textContent=String(v);tr.append(td);});return tr; }
 function populateJoints(f) {
@@ -111,9 +118,13 @@ function renderPoses(f) {
 }
 function renderHistory() {
   if(!$('history-details').open)return;
-  const i=index();$('history-table').replaceChildren(...displayed.slice(-1500).map(f=>tableRow([fmt(f.timestamp),f.mode,fmt(reference(f,i)),fmt(at(f.target,i)),fmt(actual(f,i)),fmt(at(f.raw_action,i)),fmt(validActual(f,i)?at(f.dof_vel,i):null),fmt(validActual(f,i)?at(f.dof_torque_estimated,i):null),fmt(current(f,i)),fmt(at(f.rpy,0)),fmt(at(f.rpy,1)),fmt(f.inference_executed?f.inference_latency_ms:null),fmt(finite(f.timing?.tick_dt_sec)?f.timing.tick_dt_sec*1000:null)])));
+  const i=index();$('history-table').replaceChildren(...displayed.slice(-1500).map(f=>tableRow([fmt(frameTime(f)),f.mode,fmt(reference(f,i)),fmt(at(f.target,i)),fmt(actual(f,i)),fmt(at(f.raw_action,i)),fmt(validActual(f,i)?at(f.dof_vel,i):null),fmt(validActual(f,i)?at(f.dof_torque_estimated,i):null),fmt(current(f,i)),fmt(at(f.rpy,0)),fmt(at(f.rpy,1)),fmt(f.inference_executed?f.inference_latency_ms:null),fmt(finite(f.timing?.tick_dt_sec)?f.timing.tick_dt_sec*1000:null)])));
 }
-function render() {
+function render(options = {}) {
+  const playbackTick=options.playbackTick===true,now=performance.now();
+  // Model poses remain responsive; expensive charts/DOM refresh at most 5 Hz during playback.
+  if(playbackTick&&selectedFrame&&now-lastDashboardRender<200){renderPoses(selectedFrame);return;}
+  lastDashboardRender=now;
   if(!frames.length){
     displayed=[];selectedFrame=null;
     ['mode','latency','period','ready','error'].forEach(id=>$(id).textContent='—');
@@ -121,7 +132,8 @@ function render() {
     $('inputs').textContent='等待新采样';$('commands').textContent='等待新采样';
     charts.forEach(drawChart);renderPoses({});updateStatus();return;
   }
-  if(!paused){selectedFrame=frames.at(-1);const start=selectedFrame.timestamp-Number($('window').value);displayed=frames.filter(f=>finite(f.timestamp)&&f.timestamp>=start&&f.timestamp<=selectedFrame.timestamp);}
+  if(replay && selectedFrame){const end=frameTime(selectedFrame),start=end-Number($('window').value);displayed=frames.filter(f=>frameTime(f)>=start&&f.replay_frame_index<=selectedFrame.replay_frame_index);}
+  else if(!paused){selectedFrame=frames.at(-1);const start=selectedFrame.timestamp-Number($('window').value);displayed=frames.filter(f=>finite(f.timestamp)&&f.timestamp>=start&&f.timestamp<=selectedFrame.timestamp);}
   const f=selectedFrame;if(!f)return;populateJoints(f);const i=index();
   $('mode').textContent=`${f.mode} / ${f.command_published?'已发布':'未发布'}`;
   $('latency').textContent=f.inference_executed?`${fmt(f.inference_latency_ms)} ms`:'未推理';
@@ -135,9 +147,19 @@ function render() {
   }));
   $('inputs').textContent=JSON.stringify({input_age_sec:f.input_age_sec,state_ready:f.state_ready,motion_ready:f.motion_ready,motion_reference_valid:f.motion_reference_valid,motion_reference_state:f.motion_reference_state,timing:f.timing,dropped_records:f.dropped_records,parse_errors:snapshot?.parse_errors,skipped_lines:snapshot?.skipped_lines,logger_stats:snapshot?.logger_stats,source_age_sec:snapshot?.source_age_sec,last_error:snapshot?.last_error},null,2);
   $('commands').textContent=JSON.stringify({command_published:f.command_published,command:f.command},null,2);
-  charts.forEach(drawChart);renderPoses(f);renderHistory();updateStatus();
+  charts.forEach(drawChart);renderPoses(f);
+  if(!playbackTick||now-lastHistoryRender>=1000){renderHistory();lastHistoryRender=now;}
+  updateStatus();
 }
 function updateStatus() {
+  if(replay){
+    const error=replayError||replay.error;
+    $('connection').textContent=error?'⚠ 回放错误':replay.status==='indexing'?'◌ 建立索引中':replayBusy?'◌ 加载回放片段':replayBuffering?'◌ 缓冲后续帧':playing?'▶ 离线播放':'Ⅱ 离线已暂停';
+    $('freshness').textContent=`历史采样 / ${selectedFrame?.dropped_records??'—'}`;
+    $('notice').textContent=error?`⚠ ${error}`:'离线回放：所有姿态、readiness 和命令发布标记均为历史记录，不代表当前机器人状态。';
+    if(snapshot?.truncated)$('notice').textContent+=' 当前曲线窗口因帧数或字节上限被截短，不影响跳转到其他时刻。';
+    updateReplayControls();return;
+  }
   const responseAge=lastResponse?(performance.now()-lastResponse)/1000:Infinity;
   const age=finite(snapshot?.age_sec)?snapshot.age_sec+responseAge:null;
   const stale=disconnected||responseAge>2||!finite(age)||age>1;
@@ -161,11 +183,116 @@ async function setupModel(model) {
   const newViews=['reference','target','actual'].map((k,i)=>new RobotView($(`pose-${k}`),color(i)));views=newViews;
   try{await Promise.all(newViews.map(v=>v.setModel(model)));if(modelKey===key){$('pose-note').textContent='URDF 已载入；按 joint_order_policy 名称映射。灰色部位表示缺少有效数据（仅零位上下文）。模型加载警告见各视图下方。';render();}}catch(e){$('pose-note').textContent=`模型加载失败：${e.message}`;}
 }
+function updateReplayControls() {
+  if(!replay)return;
+  const ready=replay.status==='ready'&&replay.frame_count>0;
+  const total=replay.total_bytes||0,progress=total?100*(replay.indexed_bytes||0)/total:0;
+  $('replay-progress').textContent=replay.status==='indexing'?`建立索引 ${fmt(progress,1)}% · 已索引 ${replay.frame_count||0} 帧`:`${replay.frame_count||0} 帧 · ${fmt(replay.duration_sec,3)} s · 时钟：${replay.clock?.source||'日志时间'} · 时钟回退 ${replay.clock?.backward_jumps||0} 次`;
+  $('replay-play').disabled=!ready||replayBusy||!!replay.error;
+  $('replay-play').textContent=playing?'暂停':'播放';
+  $('replay-prev').disabled=!ready||replayBusy||!selectedFrame||selectedFrame.replay_frame_index===0;
+  $('replay-next').disabled=!ready||replayBusy||!selectedFrame||selectedFrame.replay_frame_index>=replay.frame_count-1;
+  $('replay-jump').disabled=!ready||!!replay.error;
+  $('replay-timeline').disabled=!ready||!!replay.error;
+  $('replay-timeline').max=String(replay.duration_sec||0);$('replay-seconds').max=String(replay.duration_sec||0);
+  if(selectedFrame){
+    if(!scrubbing)$('replay-timeline').value=String(selectedFrame.replay_time_sec);
+    $('replay-position').textContent=`${fmt(selectedFrame.replay_time_sec,3)} / ${fmt(replay.duration_sec,3)} s · 帧 ${selectedFrame.replay_frame_index+1} / ${replay.frame_count} · ROS timestamp ${fmt(selectedFrame.timestamp,6)} · 后续缓存 ${fmt(Math.max(0,(frames.at(-1)?.replay_time_sec??0)-selectedFrame.replay_time_sec),1)} s${prefetchAbort?'（后台加载中）':''}`;
+  }
+}
+function cancelPrefetch() {prefetchAbort?.abort();prefetchAbort=null;}
+function stopReplay() {playIntent++;playing=false;replayBuffering=false;cancelPrefetch();clearTimeout(replayTimer);replayTimer=null;if(selectedFrame)render();else updateStatus();}
+async function prefetchReplay() {
+  if(prefetchAbort||replayBusy||!playing||!selectedFrame)return;
+  const last=frames.at(-1);if(!last||last.replay_frame_index>=replay.frame_count-1)return;
+  const ticket=replayRequest,controller=new AbortController();prefetchAbort=controller;
+  const started=performance.now(),timeout=setTimeout(()=>controller.abort(),30000);
+  // No history: append only unseen frames. Moderate payloads keep JSON parsing off the hot path.
+  const params=new URLSearchParams({frame:String(last.replay_frame_index+1),window_sec:'0',ahead_sec:String(Math.min(12,Math.max(4,4*replaySpeed)))});
+  try{
+    const response=await fetch(`/api/replay?${params}`,{cache:'no-store',signal:controller.signal});
+    const data=await response.json();
+    if(controller!==prefetchAbort||ticket!==replayRequest)return;
+    if(!response.ok)throw Error(data.error||`HTTP ${response.status}`);
+    if(data.playback?.status!=='ready'){if(data.playback)replay=data.playback;throw Error(data.playback?.error||'回放预取失败');}
+    frames=appendReplayFrames(frames,data.frames||[],selectedFrame.replay_frame_index,selectedFrame.replay_time_sec-Number($('window').value));
+    prefetchLatency=.5*prefetchLatency+.5*(performance.now()-started)/1000;
+    // Do not touch selectedFrame or the playback clock on successful prefetch.
+    replayError='';
+  }catch(e){
+    if(controller!==prefetchAbort||ticket!==replayRequest)return;
+    replayError=e.name==='AbortError'?'后续帧读取超时，请点击播放重试':e.message;stopReplay();
+  }finally{clearTimeout(timeout);if(prefetchAbort===controller)prefetchAbort=null;}
+}
+async function seekReplay(value,byFrame=false,resume=false) {
+  if(replay?.status!=='ready'||!finite(value))return;
+  clearTimeout(replayTimer);replayTimer=null;cancelPrefetch();replayBuffering=false;
+  const intent=playIntent;
+  const ticket=++replayRequest;replayAbort?.abort();const controller=new AbortController();replayAbort=controller;
+  replayBusy=true;playing=false;replayError='';updateStatus();
+  const params=new URLSearchParams({[byFrame?'frame':'time']:String(Math.max(0,byFrame?Math.min(replay.frame_count-1,Math.floor(value)):Math.min(replay.duration_sec,value))),window_sec:$('window').value,ahead_sec:String(Math.min(12,Math.max(4,4*replaySpeed)))});
+  const timeout=setTimeout(()=>controller.abort(),30000);
+  try{
+    const response=await fetch(`/api/replay?${params}`,{cache:'no-store',signal:controller.signal});
+    const data=await response.json();if(ticket!==replayRequest)return;
+    if(!response.ok)throw Error(data.error||`HTTP ${response.status}`);
+    if(data.playback?.status!=='ready'||!data.selected_frame){if(data.playback)replay=data.playback;throw Error(data.playback?.error||'没有可回放的采样');}
+    snapshot=data;replay=data.playback;metadata=data.metadata;frames=data.frames||[];selectedFrame=data.selected_frame;
+    if(!frames.some(f=>f.replay_frame_index===selectedFrame.replay_frame_index))frames.push(selectedFrame);
+    frames.sort((a,b)=>a.replay_frame_index-b.replay_frame_index);
+    replayBusy=false;paused=true;disconnected=false;lastResponse=performance.now();
+    charts.forEach(c=>c.hover=null);render();
+    if(resume&&intent===playIntent&&!document.hidden)startReplay();
+  }catch(e){if(ticket!==replayRequest)return;replayBusy=false;replayError=e.name==='AbortError'?'片段读取超时，请重试':e.message;stopReplay();}
+  finally{clearTimeout(timeout);}
+}
+function replayTick() {
+  if(!playing||replayBusy||!selectedFrame)return;
+  const now=performance.now(),last=frames.at(-1);
+  if(replayBuffering){
+    if(last.replay_frame_index>selectedFrame.replay_frame_index){replayBuffering=false;replayAnchor=selectedFrame.replay_time_sec;replayWall=now;}
+    else {void prefetchReplay();replayTimer=setTimeout(replayTick,33);return;}
+  }
+  const desired=Math.min(replay.duration_sec,replayAnchor+(now-replayWall)/1000*replaySpeed);
+  const chosen=frameAtTime(frames,desired)||selectedFrame;
+  if(chosen.replay_frame_index!==selectedFrame.replay_frame_index){selectedFrame=chosen;render({playbackTick:true});}
+  if(desired>last.replay_time_sec&&last.replay_frame_index<replay.frame_count-1){
+    // Freeze at the last real frame only on genuine underrun, never jump over unseen data.
+    replayBuffering=true;replayAnchor=selectedFrame.replay_time_sec;replayWall=now;updateStatus();void prefetchReplay();
+  }else if(prefetchNeeded(frames,selectedFrame,replay.frame_count,replaySpeed,prefetchLatency))void prefetchReplay();
+  if(desired>=replay.duration_sec&&selectedFrame.replay_frame_index>=replay.frame_count-1){stopReplay();return;}
+  replayTimer=setTimeout(replayTick,33);
+}
+function startReplay() {
+  if(replayBusy||!selectedFrame||replay.status!=='ready'||replay.error)return;
+  if(selectedFrame.replay_frame_index>=replay.frame_count-1){void seekReplay(0,true,true);return;}
+  playing=true;replayError='';replayBuffering=false;replayAnchor=selectedFrame.replay_time_sec;replayWall=performance.now();updateStatus();
+  if(prefetchNeeded(frames,selectedFrame,replay.frame_count,replaySpeed,prefetchLatency))void prefetchReplay();
+  clearTimeout(replayTimer);replayTimer=setTimeout(replayTick,0);
+}
+$('replay-play').addEventListener('click',()=>playing?stopReplay():startReplay());
+$('replay-prev').addEventListener('click',()=>{stopReplay();void seekReplay(selectedFrame.replay_frame_index-1,true);});
+$('replay-next').addEventListener('click',()=>{stopReplay();void seekReplay(selectedFrame.replay_frame_index+1,true);});
+$('replay-jump').addEventListener('click',()=>{stopReplay();void seekReplay($('replay-seconds').valueAsNumber);});
+$('replay-seconds').addEventListener('keydown',e=>{if(e.key==='Enter')$('replay-jump').click();});
+$('replay-speed').addEventListener('change',()=>{replaySpeed=Number($('replay-speed').value);if(playing)startReplay();});
+$('replay-timeline').addEventListener('input',()=>{scrubbing=true;stopReplay();$('replay-position').textContent=`跳转预览 ${fmt(Number($('replay-timeline').value),3)} s`;clearTimeout(seekTimer);seekTimer=setTimeout(()=>void seekReplay(Number($('replay-timeline').value)),150);});
+$('replay-timeline').addEventListener('change',()=>{scrubbing=false;clearTimeout(seekTimer);void seekReplay(Number($('replay-timeline').value));});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&replay)stopReplay();});
 async function poll() {
   try {
     const response=await fetch(`/api/snapshot?after=${sequence}`,{cache:'no-store',signal:AbortSignal.timeout(4000)});
     if(!response.ok)throw Error(`HTTP ${response.status}`);
     const data=await response.json();lastResponse=performance.now();disconnected=false;
+    if(data.playback?.mode==='replay'){
+      replay=data.playback;snapshot=data;metadata=data.metadata;
+      $('replay-controls').hidden=false;$('pause').hidden=true;document.querySelector('h1').textContent='离线运动回放';
+      $('metadata').textContent=JSON.stringify(metadata,null,2);$('source').textContent=data.source||'离线文件';
+      void setupModel(data.urdf);updateStatus();
+      if(replay.status==='ready'){await seekReplay(0,true);return;}
+      if(replay.status==='error')return;
+      setTimeout(poll,500);return;
+    }
     if(generation!==data.generation){generation=data.generation;frames=[];displayed=[];selectedFrame=null;paused=false;$('pause').textContent='暂停显示';}
     snapshot=data;metadata=data.metadata;sequence=data.last_seq||0;
     frames.push(...(data.frames||[]).filter(f=>finite(f.timestamp)));frames=frames.slice(-1500);
@@ -176,7 +303,8 @@ async function poll() {
 }
 $('pause').addEventListener('click',()=>{paused=!paused;$('pause').textContent=paused?'恢复实时':'暂停显示';render();});
 $('theme').addEventListener('change',()=>{document.documentElement.dataset.theme=$('theme').value;render();});
-['window','joint','patterns'].forEach(id=>$(id).addEventListener('change',render));
+['joint','patterns'].forEach(id=>$(id).addEventListener('change',render));
+$('window').addEventListener('change',()=>{if(replay&&selectedFrame)void seekReplay(selectedFrame.replay_frame_index,true,playing);else render();});
 const resetCameras=()=>{views.forEach(view=>view.resetCamera($('camera').value));render();};
 $('camera').addEventListener('change',resetCameras);
 $('reset-camera').addEventListener('click',resetCameras);

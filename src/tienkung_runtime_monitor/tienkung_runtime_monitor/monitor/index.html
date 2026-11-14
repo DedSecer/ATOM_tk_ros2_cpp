@@ -17,6 +17,21 @@
     <label>主题<select id="theme"><option value="dark">深色</option><option value="light">浅色</option></select></label>
     <label class="check"><input id="patterns" type="checkbox">辅助线型</label>
   </section>
+  <section id="replay-controls" class="panel" hidden aria-label="离线回放控制">
+    <h2>离线日志回放</h2>
+    <p id="replay-progress" role="status">建立时间索引中…</p>
+    <div class="controls">
+      <button id="replay-play" type="button" disabled>播放</button>
+      <button id="replay-prev" type="button" disabled>上一帧</button>
+      <button id="replay-next" type="button" disabled>下一帧</button>
+      <label>倍速<select id="replay-speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+      <label>跳转时间（距首帧秒数）<input id="replay-seconds" type="number" min="0" step="0.02" value="0"></label>
+      <button id="replay-jump" type="button" disabled>跳转</button>
+    </div>
+    <label>时间轴<input id="replay-timeline" type="range" min="0" max="0" step="0.001" value="0" disabled></label>
+    <p id="replay-position" class="hint">—</p>
+    <p class="hint">历史数据只在浏览器回放，不向机器人发送任何命令。逐帧按钮暂停播放并精确移动一条有效采样；倍速播放按时间选帧，高倍速可能跳过显示部分帧。</p>
+  </section>
   <p id="notice" class="notice" role="status">等待日志。先开启策略节点 enable_runtime_log，再将服务指向同一个日志目录。</p>
   <section class="stats" aria-label="当前采样状态">
     <div><span>模式 / 命令发布</span><strong id="mode">—</strong></div>

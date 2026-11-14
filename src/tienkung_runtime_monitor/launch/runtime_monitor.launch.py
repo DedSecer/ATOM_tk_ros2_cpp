@@ -13,6 +13,13 @@ def _start_monitor(context):
 
     executable = Path(get_package_prefix("tienkung_runtime_monitor")) / "lib" / "tienkung_runtime_monitor" / "runtime_monitor"
     command = [str(executable), "--bind", value("bind"), "--port", value("port")]
+    replay = value("replay").lower()
+    if replay not in ("true", "false", "1", "0"):
+        raise ValueError("replay must be true or false")
+    if replay in ("true", "1"):
+        if not value("log_file"):
+            raise ValueError("replay requires log_file")
+        command += ["--replay"]
     if value("log_file"):
         command += ["--log-file", value("log_file")]
     else:
@@ -28,6 +35,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("log_dir", default_value="/tmp", description="Prefer a directory dedicated to one policy node"),
         DeclareLaunchArgument("log_file", default_value="", description="Pin one JSONL file instead of following the newest run"),
+        DeclareLaunchArgument("replay", default_value="false", description="Index a completed log_file for full offline playback"),
         DeclareLaunchArgument("pattern", default_value="policy_log_*.jsonl"),
         DeclareLaunchArgument("bind", default_value="0.0.0.0"),
         DeclareLaunchArgument("port", default_value="8080"),
